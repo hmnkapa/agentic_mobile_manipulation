@@ -56,6 +56,10 @@ class CodexAdapter(ClientAdapter):
                    "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
                    "-c", "project_doc_max_bytes=0", "-c", 'model_reasoning_summary="auto"',
                    "-c", "mcp_optional_startup_grace_ms=0",
+                   # Keep RGB delivery in Codex's native MCP handler, even when
+                   # the model catalog selects code_mode_only. Model-authored
+                   # JS can drop images before forwarding the tool result.
+                   "-c", 'features.code_mode.direct_only_tool_namespaces=["mcp__manipulation"]',
                    "-c", "developer_instructions=" + json.dumps(instructions)]
         if config.reasoning_effort is not None:
             command += ['-c', 'model_reasoning_effort=' + json.dumps(config.reasoning_effort)]
