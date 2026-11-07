@@ -1,4 +1,4 @@
-"""Validate, train, resume and export Qwen3.5-4B SFT artifacts."""
+"""Validate, train, resume, export and evaluate Qwen3.5-4B SFT artifacts."""
 from __future__ import annotations
 
 import argparse
@@ -48,6 +48,17 @@ def main(argv=None):
     export.add_argument("--checkpoint", required=True)
     export.add_argument("--output", type=Path, required=True)
     export.add_argument("--dry-run", action="store_true")
+    evaluate = commands.add_parser("rollout", help="Offline next-tool-call accuracy on a complete SFT package")
+    for flag in ("data", "checkpoint", "output"):
+        evaluate.add_argument("--" + flag, type=Path, required=True)
+    evaluate.add_argument("--model", type=Path, help="Local base weights for a LoRA adapter without training metadata")
+    evaluate.add_argument("--recipe", type=Path, help="Required without metadata; otherwise must match saved encoding settings")
+    evaluate.add_argument("--split", choices=("train", "val", "all"), default="val")
+    evaluate.add_argument("--limit", type=int, help="Evaluate the first N rows of the selected split(s)")
+    evaluate.add_argument("--device", default="cuda:0", help="Single logical CUDA device (cuda:N) or cpu")
+    evaluate.add_argument("--max-new-tokens", type=int, default=2048)
+    evaluate.add_argument("--point-tolerance", type=float, default=50.0, help="Euclidean distance in student 0-1000 coordinates")
+    evaluate.add_argument("--dry-run", action="store_true", help="Validate inputs without loading weights or creating output")
     args = parser.parse_args(argv)
     try:
         if args.command == "preflight":
@@ -68,6 +79,11 @@ def main(argv=None):
                     raise TrainingError("missing_training_input", "Training requires --data and --model")
                 result = train(args.data, command_config(args, smoke=args.smoke),
                                args.model, args.preflight, args.output, dry_run=args.dry_run)
+        elif args.command == "rollout":
+            from .rollout import rollout
+            result = rollout(args.data, args.checkpoint, args.output, model=args.model, recipe=args.recipe,
+                             split=args.split, limit=args.limit, device=args.device, max_new_tokens=args.max_new_tokens,
+                             point_tolerance=args.point_tolerance, dry_run=args.dry_run)
         else:
             from .export import export_model
             result = export_model(args.run, args.checkpoint, args.output, dry_run=args.dry_run)

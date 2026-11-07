@@ -7,6 +7,81 @@
 CPU 测试通过不代表真实编码、GPU 训练或任务成功。每项运行的验证级别和状态写在对应
 JSON 报告中。四步冒烟用于验证训练基础设施，不用于报告模型任务成功率。
 
+## 离线 rollout 准确率
+
+`manip-train rollout` 或 `scripts/rollout_sft.py` 消费完整 SFT 数据包，删除每条样本
+末尾的标准 assistant 后，让模型独立生成下一次工具调用。历史、图片及其顺序、工具定义
+保持包内原样，不重新压缩，也不把预测串接进下一条样本。默认评测完整 `val` 集。
+这测量的是**离线下一调用匹配率**，报告中的 `task_success_evaluated=false`；不代表模拟器任务成功率。
+
+本仓库生成的 LoRA checkpoint 从保存的训练契约恢复基础模型、模板、thinking、图片参数
+和上下文预算，不需要 optimizer、scheduler 或 RNG 文件。只验证推理文件的保存哈希，
+允许评测不同于训练集的数据包，但要求历史及真实 token 裁剪的编码策略兼容。
+
+```bash
+"$SFT_PYTHON" /home/liqi/agentic_mobile_manipulation/scripts/rollout_sft.py \
+  --data /data/sft/package --checkpoint /data/training/swift/checkpoint-400 \
+  --output /data/evaluations/checkpoint-400
+```
+
+合并模型的输入是实际权重目录（例如导出目录下的 `model/`）。相邻的完整
+`export_manifest.json` 可用于恢复原训练配置；独立复制的完整模型必须提供 `--recipe`：
+
+```bash
+manip-train rollout --data /data/sft/package --checkpoint /data/export/model \
+  --recipe /home/liqi/agentic_mobile_manipulation/configs/training/qwen35_4b_lora_img64_compact.toml \
+  --output /data/evaluations/merged-400
+```
+
+没有可用训练元数据的 LoRA adapter 必须同时提供 `--model /models/Qwen3.5-4B` 和
+`--recipe FILE`，不能只靠 adapter 的基础模型路径猜测图片设置。已有元数据时显式 recipe
+必须与保存的编码配置和预算一致；可用 `--model` 指向内容一致的基础模型副本。
+
+| 参数 | 默认与行为 |
+|---|---|
+| `--split train\|val\|all` | `val`；all 按 train 后 val、各自原始行顺序评测 |
+| `--limit N` | 不限；设置后取所选顺序的前 N 条，不随机抽样 |
+| `--device cuda:N\|cpu` | `cuda:0`，遵守 `CUDA_VISIBLE_DEVICES`；CUDA 使用 BF16，CPU 使用 FP32 |
+| `--max-new-tokens N` | 2,048；单条生成上限，触顶且没有 EOS 时计为截断错误 |
+| `--point-tolerance D` | 50；学生 0–1000 坐标上的欧氏距离，允许设置为 0 |
+| `--dry-run` | 验证结构、来源、文件哈希和配置，不加载模型、不编码、不创建输出目录 |
+
+固定单设备、batch=1、seed=42、贪心生成。输入超长直接记录错误，不截断输入或标准答案。
+CPU 推理在调用期间使用 Transformers 自带的 Torch 卷积和线性注意力实现，避免环境中
+已安装的 CUDA 专用 causal-conv1d/FLA 接管 CPU 输入；不修改依赖安装，调用结束后恢复。
+启动前检查所选 GPU 的可用显存；单条 CUDA OOM 记录后清理缓存并继续，损坏的 CUDA 上下文中止运行。
+
+- **strict_accuracy**：恰好一个合法工具调用，工具名和全部参数一致。忽略 JSON 键顺序、调用 ID
+  和调用外的说明文字；字符串内容保留原义。数值 1 和 1.0 相等，布尔值不等于数值。
+- **tolerant_accuracy**：只放宽 `act.target.point_2d`，欧氏距离不超过阈值；image_ref、revision
+  及其余参数仍须严格一致。没有坐标的调用使用严格匹配。
+- **tool_accuracy / primitive_accuracy**：对成功结构化解析的调用比较工具名、act 的 primitive，
+  不要求其他参数通过 schema。前者分母是全部样本，后者仅为标准答案是 act 的样本。
+- **valid_call_rate**：完整、未截断且通过该样本 schema 的单调用比例。坐标距离仅统计合法 act、
+  双方都有坐标且 image_ref 一致的样本，单列可比较数量和标准坐标样本数。
+
+解析失败、无调用、多调用、重复参数、生成截断、超长及可恢复推理错误都留在评测分母中。
+终端显示严格和容差匹配的正确数/总数及比例。输出目录必须新建、位于 Git 和输入目录之外：
+`predictions.jsonl` 保存逐条来源、标准调用、原始生成、解析结果、指标、耗时及错误；
+`summary.json` 保存整体和按工具/primitive 分组的指标；配置、环境、输入指纹、选样清单、
+`run.json` 和 `journal.jsonl` 保存可复核的运行记录。运行异常或 Ctrl-C 后保留已完成行，
+汇总标为 `incomplete`、`metrics_scope=processed_only` 并显示覆盖率，不能作为完整评测结果。
+
+CPU 回归测试不加载 ML 框架：
+
+```bash
+PYTHONPATH=src:tests "$SFT_PYTHON" -m pytest -q tests/test_rollout_metrics.py tests/test_rollout.py
+```
+
+原生模板及真实权重验证使用 `tests/integration/test_qwen_sft_rollout.py`。
+设置 `MANIP_TEST_ROLLOUT_DATA`、`MANIP_TEST_ROLLOUT_FULL`、`MANIP_TEST_ROLLOUT_RECIPE` 后，
+以 `-m qwen_encode` 检查全包目标 XML 往返，以及 initialize/多图 act/finish 的真实 processor 编码。
+再设置 `MANIP_TEST_ROLLOUT_LORA`（需要时增加 `MANIP_TEST_ROLLOUT_MODEL`），以 `-m gpu`
+分别验证 LoRA 与完整模型各三个样本的实际生成；`MANIP_TEST_ROLLOUT_DEVICE` 可指定设备。
+`MANIP_TEST_ROLLOUT_MAX_NEW_TOKENS` 默认 128，可在只检查推理链路时降低。
+普通测试缺少输入会 skip；显式选择标记但缺少输入会失败。真实生成报告保存在 pytest 临时目录，
+解析失败和截断也会记录；冒烟通过只证明加载和生成路径可用，不证明准确率达标。
+
 ## 启动脚本
 
 已有独立训练环境时，可直接使用仓库脚本。默认直接启动完整 LoRA 训练，
