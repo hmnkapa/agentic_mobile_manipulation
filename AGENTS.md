@@ -2,7 +2,7 @@
 
 This is a new project, not a fork of the source repositories. Keep simulator imports inside the OmniGibson adapter. The core must run on CPU without simulator dependencies.
 
-The maintained origin is https://github.com/echo636/agentic_mobile_manipulation.git, explicitly authorized by the user. Develop this repository; do not push to reference repositories. Keep generated runs, assets, credentials and environments outside Git. Current observation is four fixed RGB cameras (front/back/left/right); no wrist camera or robot rotation is used to collect surround views.
+The maintained origin is git@github.com:hmnkapa/agentic_mobile_manipulation.git, explicitly authorized by the user on 2026-11-02. Develop this repository; do not push to reference repositories. Keep generated runs, assets, credentials and environments outside Git. Current observation is four fixed RGB cameras (front/back/left/right); no wrist camera or robot rotation is used to collect surround views.
 
 Use `feat/harness-fastmcp` as the active development baseline and PR merge target. Do not create a separate integration branch solely to merge a PR. Resolve conflicts on the existing PR source branch, complete relevant validation, and merge directly into `feat/harness-fastmcp`.
 
