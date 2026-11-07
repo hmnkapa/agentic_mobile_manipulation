@@ -74,6 +74,14 @@ This validates one Original episode; native Responses, OpenCode and Kimi do not
 inherit this real-client acceptance. CPU/interface validation passed 224 tests,
 with nine tests skipped for unavailable simulator dependencies.
 
+## SFT dataset export
+
+`manip-sft` converts recorded Codex RGB trajectories into per-decision Qwen3.5-4B
+ms-swift data on CPU. It verifies archived prompts/tools and image bytes, masks
+historical assistant turns, and provides shared point_2d and RGB-window adapters.
+See [SFT dataset conversion](docs/sft_dataset.md) for single/batch export, provenance,
+scene splits.
+
 ## Execution and evidence
 
 The model selects a pixel in a current RGB image. The private executor directly backprojects that pixel with its captured depth to obtain the target position, without a depth-to-mesh consistency check. Navigation uses that point without an object lookup. Manipulation additionally identifies the first visual object on the selected ray, solely to obtain its simulator handle; the mesh intersection never replaces the backprojected position. The executor then performs navigation, controlled carrying without a robot/object fixed joint, official state operations, or placement sampling. Base motion uses incremental idealized pose control; grasp and placement can be discontinuous. This is not a physical-control leaderboard submission. Final BDDL predicates and TaskMetric are evaluated independently after termination and are not returned to the active model. See the [RGB protocol](docs/rgb_protocol.md) and [executor v7 history](docs/executor_v7.md).

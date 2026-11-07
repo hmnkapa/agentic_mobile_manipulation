@@ -16,6 +16,7 @@ navigation = ["numpy>=1.26,<3", "scipy>=1.11,<2"]
 [project.scripts]
 manip-agent = "manipulation_agent.vision_cli:main"
 manip-mcp = "manipulation_agent.mcp_server:main"
+manip-sft = "manipulation_agent.sft.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -31,3 +32,4 @@ manipulation_agent = ["tasks.json", "replay_assets/*.html", "replay_assets/*.css
 "share/manipulation-agentic-system/skills/failure-recovery" = ["skills/failure-recovery/SKILL.md"]
 "share/manipulation-agentic-system/skills/goal-decomposition" = ["skills/goal-decomposition/SKILL.md"]
 "share/manipulation-agentic-system/skills/goal-decomposition/references" = ["skills/goal-decomposition/references/working-state.md"]
+

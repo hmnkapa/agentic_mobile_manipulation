@@ -1,3 +1,16 @@
+# Navigation SFT design reference
+
+The independent `manipulation_agent.sft` converter follows the per-decision loss
+masking and history-window design in `Cytosi/habitat-gs`, branch `zimeng/point_nav`,
+commit `c7322f4944ff182508083f3a73282e09964696d2`, specifically
+`bench/tool/nav_sft/scripts/build_nav_sft_dataset.py` and
+`bench/tool/harness/nav_window.py`. It implements manipulation-specific evidence,
+coordinates and compression without importing or bundling the Habitat runtime.
+Its `rgb_window_budget_v1` policy also follows that commit's two-stage soft
+budget handling: first retain one image per older observation, then remove old
+assistant/tool groups. This project counts RGB-bearing replies and handles
+interleaved public assistant text as part of the original call group.
+
 # Jinkai visual-point GT navigation strategy
 
 The candidate sampling and scoring in `executors/gt_navigation.py` are adapted
