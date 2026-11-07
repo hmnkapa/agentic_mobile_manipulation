@@ -1,5 +1,9 @@
 # Codex 轨迹 → Qwen3.5-4B SFT
 
+后续编码预检、LoRA 训练、恢复与导出见 [训练指南](sft_training.md)。
+转换格式函数已移入 `sft.format`，归档和图片处理拆为 `sft.snapshot`、`sft.assets`；
+现有共享协议 API、历史格式导入和编码检查命令保持兼容。
+
 转换器从本项目保存的 Codex RGB 轨迹生成 ms-swift `messages/images/tools` JSONL。
 它只需要 Python 3.11 标准库，导出不调用模型或模拟器。数据筛选使用独立评估结果；
 finish、客户端退出和证据验证分别记录。转换后的数据与当前 Codex 运行接口相互独立。
@@ -94,6 +98,42 @@ python scripts/build_manipulation_sft_dataset.py \
 每条样本从原始前缀独立计算，原始轨迹与目标监督不变。长度不用于筛除样本，也没有轨迹回合数门槛。
 即使裁剪后粗估低于预算，训练侧仍须检查真实编码长度。
 
+### 按真实 processor token 重新裁剪
+
+在独立 ms-swift 环境中，可对已经导出的数据包继续裁剪。需要该包完成的真实编码预检，
+以及完全相同的模型、模板、图片设置和依赖：
+
+```bash
+python -m manipulation_agent.sft.retrim \
+  --data /data/sft/cohort_v1 \
+  --model /models/Qwen3.5-4B \
+  --baseline-preflight /data/sft_checks/encode_001 \
+  --out-dir /data/sft/cohort_real_tokens \
+  --max-length 17408 --workers 1
+```
+
+新策略名为 `rgb_window_processor_budget_v1`。它以原生模板 token 和实际 processor
+图像网格展开计算完整长度，包括 system、工具定义、图片、目标与模板标记。每个输入的
+完整 token ID 必须与封存的预检一致；每个输出另外执行完整图片处理和反事实 loss mask
+检查。这个过程在 CPU 上执行，不加载模型权重，也不启动训练。
+
+裁剪顺序仍是窗口外旧 RGB 回执先减图，再从最早开始删除完整调用组。保留原 split、
+system/user、监督目标、最近 K 个完整 RGB 调用组及其后的历史。只继续裁剪当前包保留的
+上下文，不恢复此前已删除的内容。如果受保护的最小上下文本身超限，基础命令保留该行并
+在 `trimming_report.json` 的 `untrimmable_samples` 中逐条报告，不截断监督目标。
+
+`sample_sources.jsonl` 增加 `processor_tokens_before`、`processor_tokens` 和对应裁剪统计；
+原粗估裁剪信息保存在 `parent_length_control`。`token_lengths.jsonl` 记录逐条完整编码、
+输入/标签摘要和目标验证；`length_contract.json` 固定模型、processor、模板、依赖与源码。
+这两份文件的哈希参与新包配置和训练读取指纹。`processor_over_budget` 为真实长度超限，
+粗估字段仍只用于描述，不能作为真实长度判据。
+
+默认单进程编码，每 200 条重建一个 worker，避免长期累积的 processor 工作内存。
+进程异常退出时保留已关闭的 `.incomplete` 文件；可在新输出目录使用
+`--resume-prefix /data/sft/failed_run` 继续。续跑要求数据、模型、编码设置、依赖和编码源码
+一致，并核对每条缓存行的 SHA256、原输入 token ID、目标与完整监督验证证据。
+实际交付可将无法达标的行按原 split 单列归档；主集和归档的并集应覆盖全部原始样本。
+
 ## 学生协议与来源
 
 本项目原生 `act.target.point=[x,y]` 范围为 0–1。学生使用：
@@ -179,6 +219,19 @@ compact_context, stats = compact_history(existing_history, k=2)
 `effect.message` 仅删除代码列出的两条固定执行说明。`verification=executor_operation_only`
 保持原样，执行器完成不改写为任务成功。
 
+已有数据包可用下列命令生成新包，保留样本身份、划分、图片和目标：
+
+```bash
+python -m manipulation_agent.sft.compact \
+  --data /data/existing_package --out-dir /data/new_compact_package
+```
+
+新包使用 `rgb_window_budget_compact_success_v1` 上下文策略，并写入压缩契约、报告、
+逐样本压缩统计和父包元数据。此步骤不追加图片或历史裁剪，`max_len=0` 只表示本步骤
+不使用粗估预算；训练仍按 recipe 的真实 token 上限预检。父包既有的裁剪不会被恢复。
+新包不会继承父包的真实编码通过状态，必须使用匹配的 compact recipe 重新预检。
+训练入口检查 `data.history_compression` 与包内策略一致，预检还绑定压缩证据的哈希。
+
 ## 数据包与验证
 
 单条输出 `dataset.jsonl`；批量输出 `train.jsonl` 和 `val.jsonl`。
@@ -210,8 +263,26 @@ compact_context, stats = compact_history(existing_history, k=2)
 CPU 检查：
 
 ```bash
-python -m pytest -q tests/test_sft*.py
+python -m pytest -q tests/test_sft*.py tests/test_training*.py
 ```
+
+可选 Qwen 编码检查，在另行准备的 ms-swift/Qwen3.5 环境中执行：
+
+```bash
+PYTHONPATH=/path/to/agentic_mobile_manipulation/src \
+python -m manipulation_agent.sft.verify_encode \
+  --record /data/sft/radio_v1/dataset.jsonl \
+  --model /models/Qwen3.5-4B \
+  --index 6
+```
+
+该命令不加载模型权重，解析包内图片，报告实际 token、图片 token 和 loss token；
+先经过 ms-swift `MessagesPreprocessor` 的 OpenAI 工具调用预处理，再编码。
+通过仅关闭最后 assistant 的 loss，再次预处理和编码，检查历史 mask 是否被模板尊重。
+需要支持 OpenAI `tool_calls` 转换的 ms-swift 版本；不支持时明确报错。
+预处理规则见 [ms-swift 数据格式说明](https://github.com/modelscope/ms-swift/blob/main/docs/source_en/Customization/Custom-dataset.md)。
+检查覆盖选中的一条记录，不代表整个数据集已编码或训练通过。
+基础转换无需安装 ms-swift/transformers，CPU 结构检查通过也不会自动标记 Qwen 编码通过。
 
 参考：`Cytosi/habitat-gs` 的 `zimeng/point_nav` 分支，commit
 `c7322f4944ff182508083f3a73282e09964696d2`，

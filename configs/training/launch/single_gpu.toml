@@ -1,0 +1,6 @@
+[launch]
+nproc_per_node = 1
+attn_impl = "sdpa"
+use_liger_kernel = false
+dataset_num_proc = 1
+dataloader_num_workers = 0

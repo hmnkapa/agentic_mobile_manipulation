@@ -1,0 +1,16 @@
+# Additive freeze from the real SFT environment (2026-11-04, Asia/Shanghai).
+# Base pins remain unchanged. W&B SDK/Transformers offline CPU checks passed.
+# New-environment Qwen encoding, GPU SFT, online sync/resume: NOT RUN.
+-r training.lock.txt
+cwevals==0.0.1b1
+distro==1.9.0
+googleapis-common-protos==1.76.0
+opentelemetry-exporter-http-transport==0.66b2
+opentelemetry-exporter-otlp-common==0.66b2
+opentelemetry-exporter-otlp-proto-common==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-proto==1.45.2
+opentelemetry-sdk==1.45.2
+opentelemetry-semantic-conventions==0.66b2
+platformdirs==4.14.4
+wandb==0.31.0

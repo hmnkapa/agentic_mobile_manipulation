@@ -12,3 +12,7 @@ runs/*
 # Keep them untracked if an output directory is created here by mistake.
 /reports/
 /operations/
+
+# W&B state and local authentication never belong in source control.
+wandb/
+.netrc

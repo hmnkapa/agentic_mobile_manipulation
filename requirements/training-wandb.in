@@ -1,0 +1,3 @@
+# W&B SDK used by the managed SFT worker. Install before generating preflight
+# evidence: dependency changes intentionally invalidate the environment contract.
+wandb==0.31.0

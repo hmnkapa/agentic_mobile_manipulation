@@ -1,0 +1,15 @@
+[smoke]
+enabled = true
+train_samples = 16
+val_samples = 8
+stop_after_step = 2
+
+[training]
+max_steps = 4
+gradient_accumulation_steps = 4
+dataset_shuffle = false
+train_dataloader_shuffle = false
+group_by_length = false
+eval_steps = 2
+save_steps = 2
+load_best_model_at_end = false

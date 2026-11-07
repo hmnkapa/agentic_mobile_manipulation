@@ -76,11 +76,18 @@ with nine tests skipped for unavailable simulator dependencies.
 
 ## SFT dataset export
 
+The optional `manip-train` toolchain adds full encoding preflight, LoRA training,
+checkpoint resume and model export. See [Qwen3.5-4B SFT training](docs/sft_training.md)
+for the separate environment, CPU checks and real-data smoke procedure.
+New SFT runs track metrics and provenance in W&B project
+`qili0502-zhejiang-university/agentic_distillation`; see the training guide for
+login, offline logging and checkpoint resume behavior.
+
 `manip-sft` converts recorded Codex RGB trajectories into per-decision Qwen3.5-4B
 ms-swift data on CPU. It verifies archived prompts/tools and image bytes, masks
 historical assistant turns, and provides shared point_2d and RGB-window adapters.
 See [SFT dataset conversion](docs/sft_dataset.md) for single/batch export, provenance,
-scene splits.
+scene splits, and optional processor-only encoding checks.
 
 ## Execution and evidence
 

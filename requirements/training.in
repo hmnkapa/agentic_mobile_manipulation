@@ -1,0 +1,9 @@
+# Install in a separate Python 3.11 environment, with a driver-compatible CUDA
+# PyTorch build. Freeze the actual environment only after real validation.
+ms-swift==4.6.0
+transformers>=5.2.0,<5.20.0
+qwen-vl-utils>=0.0.14
+decord
+Pillow
+pytest
+-r training-wandb.in

@@ -17,6 +17,7 @@ navigation = ["numpy>=1.26,<3", "scipy>=1.11,<2"]
 manip-agent = "manipulation_agent.vision_cli:main"
 manip-mcp = "manipulation_agent.mcp_server:main"
 manip-sft = "manipulation_agent.sft.cli:main"
+manip-train = "manipulation_agent.training.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -25,6 +26,8 @@ where = ["src"]
 manipulation_agent = ["tasks.json", "replay_assets/*.html", "replay_assets/*.css", "replay_assets/*.js", "report_assets/*.css", "report_assets/*.js"]
 
 [tool.setuptools.data-files]
+"share/manipulation-agentic-system/training" = ["configs/training/qwen35_4b_lora.toml", "configs/training/qwen35_4b_lora_img256.toml", "configs/training/qwen35_4b_lora_img64.toml", "configs/training/qwen35_4b_lora_img64_compact.toml", "configs/training/smoke.toml"]
+"share/manipulation-agentic-system/training/launch" = ["configs/training/launch/single_gpu.toml", "configs/training/launch/ddp_2gpu.toml"]
 "share/manipulation-agentic-system/skills/visual-manipulation" = ["skills/visual-manipulation/SKILL.md"]
 "share/manipulation-agentic-system/skills/visual-manipulation/references" = ["skills/visual-manipulation/references/evidence.md", "skills/visual-manipulation/references/material-actions.md"]
 "share/manipulation-agentic-system/skills/visual-exploration" = ["skills/visual-exploration/SKILL.md"]
@@ -33,3 +36,8 @@ manipulation_agent = ["tasks.json", "replay_assets/*.html", "replay_assets/*.css
 "share/manipulation-agentic-system/skills/goal-decomposition" = ["skills/goal-decomposition/SKILL.md"]
 "share/manipulation-agentic-system/skills/goal-decomposition/references" = ["skills/goal-decomposition/references/working-state.md"]
 
+[tool.pytest.ini_options]
+markers = [
+  "qwen_encode: explicit real Qwen processor encoding checks",
+  "gpu: explicit real GPU LoRA train/resume/export checks",
+]

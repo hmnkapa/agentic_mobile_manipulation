@@ -12,6 +12,7 @@ from manipulation_agent.sft.dataset import episode_samples, prepare_dataset, wri
 from manipulation_agent.sft.format import estimate_length, to_msswift, validate_record
 from manipulation_agent.sft.history import compress_history
 from manipulation_agent.sft.source import load_episode
+from manipulation_agent.training.data import index_package
 from sft_fixtures import SftFixtureTestCase
 
 
@@ -249,6 +250,33 @@ class BudgetDatasetTests(SftFixtureTestCase):
         changed.decisions[3].interleaved_text = []
         self.assertEqual(trimmed[:4], list(episode_samples(changed, max_len=1))[:4])
 
+    def test_package_statistics_and_training_reader_agree_after_trimming(self):
+        sources = [self.long_fixture(name, scene=scene).flush()
+                   for name, scene in (("one", "scene_a"), ("two", "scene_b"))]
+        data = prepare_dataset(sources, batch=True, max_len=1)
+        self.assertEqual(data.max_len, 1)
+        records = list(data.records())
+        original_bytes = {path: path.read_bytes() for source in sources for directory in
+                          (source.run_dir, source.controller_dir) for path in directory.glob("*.json*")}
+        package = write_package(data, self.root / "package")
+        config = json.loads((package / "config.json").read_text())
+        self.assertEqual(config["context_policy"], "rgb_window_budget_v1")
+        self.assertEqual(config["max_len"], 1)
+        self.assertFalse(config["keep_all_images"])
+        meta = [json.loads(line) for line in (package / "sample_sources.jsonl").read_text().splitlines()]
+        self.assertEqual(meta, [m for _, m in records])
+        trimming = data.stats["length_control"]
+        for key in ("slimmed_images", "dropped_history_pairs", "images_removed"):
+            self.assertEqual(trimming[key], sum(m[key] for m in meta))
+        self.assertEqual(trimming["over_budget_samples"], len(records))
+        self.assertEqual(trimming["truncated_samples"], sum(m["dropped_history_pairs"] > 0 for m in meta))
+        index = index_package(package)
+        self.assertEqual([index.record(sample) for sample in index.samples], [r for r, _ in records])
+        used = {p for record, _ in records for p in record["images"]}
+        self.assertEqual(set(index.images), used)
+        self.assertEqual(data.stats["unique_images"], len(used))
+        for path, original in original_bytes.items():
+            self.assertEqual(path.read_bytes(), original)
 
     def test_cli_defaults_override_disable_and_negative_limit(self):
         source = self.long_fixture().flush()

@@ -23,6 +23,7 @@ from manipulation_agent.sft.history import compress_history, validate_record
 from manipulation_agent.sft.protocol import (build_student_context, from_student_arguments,
     rewrite_interface_text, to_student_arguments)
 from manipulation_agent.sft.source import EpisodeSource, load_episode
+from manipulation_agent.sft.verify_encode import check_encoding
 from manipulation_agent.tools import tool_specs
 from manipulation_agent.vision_policy import system_prompt
 

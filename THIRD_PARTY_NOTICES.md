@@ -11,6 +11,12 @@ budget handling: first retain one image per older observation, then remove old
 assistant/tool groups. This project counts RGB-bearing replies and handles
 interleaved public assistant text as part of the original call group.
 
+The optional training toolchain also refers to that commit's
+`sft_qwen35_nav_lora_last1_gate.sh`, `sft_qwen35_4b_lora_smoke.sh`, and merge
+scripts. Its configuration, provenance, validation and launch code is independently
+implemented. Training uses ms-swift as a separately installed Apache-2.0 dependency;
+no ms-swift trainer or upstream simulator source is bundled.
+
 # Jinkai visual-point GT navigation strategy
 
 The candidate sampling and scoring in `executors/gt_navigation.py` are adapted

@@ -1,0 +1,52 @@
+[model]
+model_type = "qwen3_5"
+torch_dtype = "bfloat16"
+
+[template]
+template = "qwen3_5"
+agent_template = "qwen3_5"
+template_backend = "swift"
+enable_thinking = true
+preserve_thinking = true
+add_non_thinking_prefix = false
+loss_scale = "default"
+disable_ignore_empty_think = true
+
+[vision]
+image_min_token_num = 4
+image_max_token_num = 1024
+
+[data]
+max_length = 16384
+overlength_policy = "error"
+k = 2
+# Preserve all package images; the converter records any source-history trimming.
+keep_all_images = true
+
+[training]
+tuner_type = "lora"
+lora_rank = 16
+lora_alpha = 32
+lora_dropout = 0.05
+freeze_vit = true
+freeze_aligner = true
+target_modules = "all-linear"
+learning_rate = 0.0001
+lr_scheduler_type = "cosine"
+warmup_ratio = 0.05
+per_device_train_batch_size = 1
+per_device_eval_batch_size = 1
+gradient_accumulation_steps = 8
+num_train_epochs = 3
+gradient_checkpointing = true
+packing = false
+padding_free = false
+strict = true
+split_dataset_ratio = 0.0
+report_to = "wandb"
+
+[wandb]
+entity = "qili0502-zhejiang-university"
+project = "agentic_distillation"
+mode = "online"
+tags = ["qwen3.5-4b", "sft", "lora"]
