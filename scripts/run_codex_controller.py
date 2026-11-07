@@ -48,14 +48,15 @@ def main(argv=None, *, allow_client=False):
     probing = allow_client and '--probe' in argv
     p = argparse.ArgumentParser()
     if allow_client:
-        p.add_argument('--client', choices=['codex', 'opencode', 'kimi'], default='codex')
+        p.add_argument('--client', choices=['codex', 'opencode', 'kimi', 'qwen'], default='codex')
         p.add_argument('--probe', action='store_true', help='Report installed CLI capabilities; does not call a model')
-    p.add_argument("--model", default='gpt-6.1-sol')
+    p.add_argument("--model")
+    p.add_argument('--qwen-config', type=Path, help='Local native-interface Qwen model locations and GPU')
     p.add_argument("--instruction", required=not probing)
     p.add_argument("--mcp-command", required=not probing)
     p.add_argument("--mcp-args-json", required=not probing)
     p.add_argument("--output", type=Path, required=not probing)
-    p.add_argument("--timeout", type=int, default=900,help='Controller wall timeout; 0 disables it for step-budget episodes')
+    p.add_argument("--timeout", type=int, default=None,help='Controller wall timeout; default 900, Qwen defaults to unbounded')
     timing=p.add_mutually_exclusive_group()
     timing.add_argument('--deadline-unix', type=float,
                         help='Legacy absolute deadline; preserved for existing run configurations')
@@ -73,6 +74,8 @@ def main(argv=None, *, allow_client=False):
     p.add_argument('--resume-backoff-seconds', type=int, default=90)
     args = p.parse_args(argv)
     client = getattr(args, 'client', 'codex')
+    if args.model is None:args.model='Qwen/Qwen3.5-4B' if client=='qwen' else 'gpt-6.1-sol'
+    if args.timeout is None:args.timeout=0 if client=='qwen' else 900
     if client == 'codex' and args.reasoning_effort is None:args.reasoning_effort='low'
     adapter = get_adapter(client)
     if probing:
@@ -89,13 +92,24 @@ def main(argv=None, *, allow_client=False):
         p.error('Provider resume count must be -1 or nonnegative and backoff positive')
     if args.rate_limit_resumes and client != 'codex':
         p.error('Rate-limit resume is supported only for Codex')
+    if client=='qwen':
+        from manipulation_agent.clients.qwen.config import load_config
+        if args.qwen_config is None:p.error('--client qwen requires --qwen-config')
+        if args.timeout is not None or deadline.unix is not None:p.error('Qwen requires an unbounded episode')
+        runtime=load_config(args.qwen_config)
+        target=args.output.resolve()
+        for protected in (runtime['model'],runtime['adapter']):
+            if protected and (target==Path(protected) or Path(protected) in target.parents):
+                p.error('Controller output must be outside model and adapter directories')
+    elif args.qwen_config is not None:p.error('--qwen-config applies only to Qwen')
     args.output.mkdir(parents=True, exist_ok=False)
     shutil.copytree(Path(__file__).resolve().parents[1] / "src", args.output / "source_snapshot",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     config = ClientConfig(client, args.model, args.instruction, args.mcp_command,
                           json.loads(args.mcp_args_json), args.output, args.timeout,
                           args.agent_profile, args.isolate_client_storage,
-                          args.reasoning_effort, args.model_provider_profile, args.model_provider_gateway)
+                          args.reasoning_effort, args.model_provider_profile, args.model_provider_gateway,
+                          args.qwen_config)
     capability = adapter.probe()
     if capability.status != 'available':
         write_json(args.output / 'controller.json', {
@@ -127,6 +141,10 @@ def main(argv=None, *, allow_client=False):
                 "host": os.uname().nodename, "controller": client + "_cli", "command": command,
                 "instruction": args.instruction, "source": source_version(),
                 "client_version": capability.version, "client_capability": asdict(capability)}
+    if client=='qwen':
+        request=json.loads((args.output/'qwen_request.json').read_text())
+        metadata.update(qwen_config=request['runtime'],episode_budget_policy='unbounded',
+                        model_interface='native_mcp_point_0_1')
     if project.client_storage is not None:
         metadata['client_storage'] = project.client_storage
     metadata['provider_recovery'] = dict(max_resumes=args.rate_limit_resumes,
@@ -164,6 +182,8 @@ def main(argv=None, *, allow_client=False):
                 raise ValueError('Execution clock command must be a nonempty argv array')
             armed=subprocess.run(clock_command,capture_output=True,text=True,timeout=30,check=True)
             clock=validate_execution_clock(json.loads(armed.stdout))
+            if client=='qwen' and clock['episode_deadline_unix'] is not None:
+                raise ValueError('Qwen requires an unbounded execution clock')
             deadline=EpisodeDeadline(clock['episode_deadline_unix'])
             metadata.update(execution_clock=clock,execution_started_at_unix=clock['execution_started_at_unix'],
                 episode_deadline_unix=clock['episode_deadline_unix'],execution_budget_seconds=clock['execution_budget_seconds'],

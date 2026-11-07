@@ -6,6 +6,9 @@ from .types import ClientConfig, ClientCapability, PreparedProject, ClientRunRes
 
 
 def get_adapter(name: str):
+    if name == 'qwen':
+        from .qwen import QwenAdapter
+        return QwenAdapter()
     adapters = {"codex": CodexAdapter, "opencode": OpenCodeAdapter, "kimi": KimiAdapter}
     if name not in adapters:
         raise ValueError(f"Unsupported client: {name}")

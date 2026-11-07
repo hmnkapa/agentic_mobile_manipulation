@@ -76,6 +76,15 @@ with nine tests skipped for unavailable simulator dependencies.
 
 ## SFT dataset export
 
+Local Qwen3.5-4B base and PEFT LoRA weights can use the existing MCP task loop via
+`scripts/run_model_controller.py --client qwen --qwen-config FILE`. The client
+preserves the original project prompt, native `[0,1]` point schema, four-camera
+image bytes and public feedback history. It does not inherit SFT image budgets,
+coordinate transforms or history compression. For supervised single-task or batch
+runs, use [`scripts/run_qwen_behavior.sh`](scripts/run_qwen_behavior.sh) with an
+existing site runner template; add `--lora CHECKPOINT` for explicit PEFT weights.
+See [native online execution and validation limits](docs/qwen_online.md).
+
 The optional `manip-train` toolchain adds full encoding preflight, LoRA training,
 checkpoint resume and model export. See [Qwen3.5-4B SFT training](docs/sft_training.md)
 for the separate environment, CPU checks and real-data smoke procedure.

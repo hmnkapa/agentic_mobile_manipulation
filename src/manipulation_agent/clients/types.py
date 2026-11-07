@@ -43,9 +43,10 @@ class ClientConfig:
     reasoning_effort: str | None = None
     model_provider_profile: str | None = None
     model_provider_gateway: str | None = None
+    qwen_config: Path | None = None
 
     def __post_init__(self):
-        if self.client not in {"codex", "opencode", "kimi"}:
+        if self.client not in {"codex", "opencode", "kimi", "qwen"}:
             raise ValueError(f"Unsupported client: {self.client}")
         if self.timeout is not None and self.timeout <= 0:
             raise ValueError("timeout must be positive")
@@ -59,6 +60,10 @@ class ClientConfig:
             raise ValueError('Model provider and reasoning effort overrides are supported only for Codex')
         if self.model_provider_gateway is not None and (self.client != 'codex' or not self.model_provider_profile):
             raise ValueError('A provider gateway requires an explicit Codex provider profile')
+        if self.client == 'qwen' and (self.qwen_config is None or self.timeout is not None):
+            raise ValueError('Qwen requires qwen_config and an unbounded episode')
+        if self.client != 'qwen' and self.qwen_config is not None:
+            raise ValueError('qwen_config applies only to Qwen')
 
     @property
     def prompt(self) -> str:

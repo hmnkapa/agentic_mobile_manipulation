@@ -135,7 +135,12 @@ DERIVED = {
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--official',type=Path,required=True);p.add_argument('--bddl',type=Path,required=True);p.add_argument('--capabilities',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
-    p.add_argument('--instruction-mode', choices=['existing','mixed-coarse'], default='existing');a=p.parse_args()
+    p.add_argument('--instruction-mode', choices=['existing','mixed-coarse'], default='existing')
+    p.add_argument('--client',choices=['codex','opencode','kimi','qwen'],default='codex')
+    p.add_argument('--model')
+    p.add_argument('--qwen-config',type=Path)
+    a=p.parse_args()
+    if (a.client=='qwen')!=(a.qwen_config is not None):p.error('Qwen requires --qwen-config; other clients must omit it')
     raw=json.loads(a.official.read_text());tasks=raw['tasks'] if isinstance(raw,dict) else raw
     assert len(tasks)==len({t['id'] for t in tasks})==100
     caps={t['id']:t for t in json.loads(a.capabilities.read_text())}
@@ -157,10 +162,13 @@ def main():
         'official_submission_eligible':False,'official_catalog_sha256':hashlib.sha256(a.official.read_bytes()).hexdigest(),
         'instruction_mode':a.instruction_mode,
         'instruction_counts':dict(Counter(row['instruction_source'] for row in rows)),
-        'model':'gpt-6.1-sol','model_reasoning_effort':'low','agent_profile':'skills',
-        'episode_budget_policy':'agent_steps','max_agent_steps':50,
+        'controller_client':a.client+'_cli',
+        'model':a.model or ('Qwen/Qwen3.5-4B' if a.client=='qwen' else 'gpt-6.1-sol'),
+        'model_reasoning_effort':'low' if a.client=='codex' else None,'agent_profile':'skills',
+        'episode_budget_policy':'unbounded','max_agent_steps':None,
         'max_actions':50,'max_sim_steps':20000,'model_timeout_seconds':None,
         'simulator_runtime_max_seconds':None,'startup_timeout_seconds':1200,'tasks':rows}
+    if a.qwen_config:result['qwen_config']=str(a.qwen_config.resolve())
     a.output.write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n');print(json.dumps({'tasks':len(rows),'instruction_counts':result['instruction_counts']}))
 
 

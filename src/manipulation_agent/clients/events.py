@@ -131,8 +131,9 @@ def parse_events(path: Path, client: str) -> ParsedEvents:
         rows.append(data)
         at = data.get("at", data.get("timestamp", data.get("time")))
         typ = data.get("type")
-        if client == "codex":
-            compat.append(data)
+        if client in {"codex", "qwen"}:
+            if client == "codex":
+                compat.append(data)
             if typ == "turn.started":
                 turn += 1
             item = data.get("item") or {}

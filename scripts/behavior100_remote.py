@@ -310,7 +310,7 @@ def main():
     args=[sys.executable,'-m','manipulation_agent.vision_cli','--backend','omnigibson','--policy','serve',
           '--task',row['task'],'--instance',str(row['instance']),'--seed',str(row['seed']),
           '--instruction',row['instruction'],'--agent-profile',manifest['agent_profile'],'--record-video',
-          '--port',str(a.port),'--controller','codex:'+manifest['model'],
+          '--port',str(a.port),'--controller',manifest.get('controller_client','codex_cli').removesuffix('_cli')+':'+manifest['model'],
           '--max-actions',str(manifest['max_actions']),'--max-sim-steps',str(manifest['max_sim_steps']),
           '--output',str(a.data_root/'runs'/row['run_id'])]
     args+=['--goal-skill',manifest.get('goal_skill','hierarchical')]

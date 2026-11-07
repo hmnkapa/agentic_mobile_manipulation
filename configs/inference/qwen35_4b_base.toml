@@ -1,0 +1,5 @@
+# Paths are resolved relative to this file. Select a free physical GPU UUID.
+python = "${QWEN_PYTHON}"
+model = "${QWEN_MODEL}"
+device = "cuda:0"
+gpu_uuid = "${QWEN_GPU_UUID}"

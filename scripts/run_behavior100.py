@@ -33,6 +33,7 @@ from manipulation_agent.batch_lifecycle import ExecutionCapacity, FileLease, Wor
 from manipulation_agent.startup_progress import STARTUP_POLICY, startup_progress_update
 from manipulation_agent.closure import closure_watchdog
 from manipulation_agent.clients.events import parse_events
+from manipulation_agent.clients.controller import controller_client, controller_prefix, controller_options, qwen_config_path
 from manipulation_agent.batch_storage import BatchStorage
 
 FINAL = {'passed','failed','blocked'}
@@ -91,7 +92,7 @@ def worker_configs(config):
                'base_port', 'minimum_free_gpu_mib', 'simulator_memory_max',
                'simulator_env', 'expected_gpu_uuid', 'memory_budget_gib', 'admission_delay_seconds',
                'simulator_appdata_path', 'simulator_tmpdir', 'startup_memory_gib',
-               'validated_driver_version', 'driver_validation_evidence'}
+               'validated_driver_version', 'driver_validation_evidence', 'qwen_config'}
     result=[]; ids=set(); devices=set(); ports=set()
     for lane in lanes:
         if set(lane)-allowed: raise ValueError('Unsupported worker fields')
@@ -164,7 +165,7 @@ def controller_process_alive(pid, output):
         args=(proc/'cmdline').read_bytes().decode().split('\0')
     except FileNotFoundError:
         return False
-    if not any(x.endswith('/scripts/run_codex_controller.py') for x in args):
+    if not any(x.endswith(('/scripts/run_codex_controller.py','/scripts/run_model_controller.py')) for x in args):
         raise RuntimeError('Controller PID reused by another process')
     if '--output' not in args or args[args.index('--output')+1]!=str(output):
         raise RuntimeError('Controller output ownership mismatch')
@@ -360,9 +361,21 @@ class Batch:
         missing=[k for k in config.get('required_controller_env',[]) if not self.environment.get(k)]
         if missing: raise RuntimeError('Required controller environment variables absent: '+','.join(missing))
         if config.get('controller_path'): self.environment['PATH']=config['controller_path']
-        client=shutil.which('codex',path=self.environment.get('PATH'))
-        if not client: raise RuntimeError('Model executable unavailable before any simulator launch')
-        subprocess.run([client,'--version'],check=True,capture_output=True,text=True,timeout=20)
+        name=controller_client(self.manifest)
+        if name=='qwen':
+            from manipulation_agent.clients.qwen.config import load_config
+            for worker in self.workers:
+                controller_prefix(self.source,self.manifest,worker)
+                runtime=load_config(qwen_config_path(self.manifest,worker))
+                if runtime['device']!='cpu' and not worker.get('expected_gpu_uuid'):
+                    raise ValueError('Qwen workers require expected_gpu_uuid for simulator/inference lease isolation')
+                subprocess.run([runtime['python'],'-c',
+                    'import importlib.metadata as m; [m.version(p) for p in ("torch","transformers","peft","mcp")]'],
+                    check=True,capture_output=True,text=True,timeout=30)
+        else:
+            client=shutil.which(name,path=self.environment.get('PATH'))
+            if not client: raise RuntimeError('Model executable unavailable before any simulator launch')
+            subprocess.run([client,'--version'],check=True,capture_output=True,text=True,timeout=20)
 
     def ssh(self, args, timeout=40):
         cmd=shlex.join(args) if isinstance(args,list) else args
@@ -555,6 +568,39 @@ class Batch:
             lease.release()
             raise
         return lease
+
+    def acquire_inference_resources(self, adopting=None):
+        if controller_client(getattr(self,'manifest',{}))!='qwen':return True
+        from manipulation_agent.clients.qwen.config import load_config
+        from manipulation_agent.clients.qwen.resources import acquire_inference_lease, gpu_admission
+        runtime=load_config(qwen_config_path(self.manifest,self.c))
+        if runtime['device']=='cpu':return True
+        if runtime['gpu_uuid']==self.c.get('expected_gpu_uuid'):
+            raise RuntimeError('Permanent admission error: simulator and inference GPUs must be distinct')
+        directory=self._config.get('shared_lease_dir',str(self.root.parent/'resource_leases'))
+        lease=acquire_inference_lease(directory,runtime,
+            {'batch':str(self.root),'worker_id':self.c['id']},adopting=adopting['run_id'] if adopting else None)
+        if lease is None:
+            self.worker_state('waiting_for_inference_gpu');return False
+        self._worker_local.inference_lease=lease
+        if not adopting:
+            try:gpu_admission(runtime)
+            except ValueError as exc:
+                raise RuntimeError('Permanent admission error: '+str(exc)) from exc
+            except (OSError,RuntimeError,subprocess.SubprocessError) as exc:
+                self.worker_state('waiting_for_inference_memory',reason=str(exc));return False
+        return True
+
+    def record_inference_controller(self,row,pid,controller):
+        lease=getattr(self._worker_local,'inference_lease',None)
+        if lease:
+            from manipulation_agent.clients.qwen.resources import process_start
+            lease.record(run_id=row['run_id'],controller_pid=pid,pid_start=process_start(pid),
+                         controller_output=str(controller),launch_pending=False)
+
+    def record_inference_pending(self,row,controller):
+        lease=getattr(self._worker_local,'inference_lease',None)
+        if lease:lease.record(run_id=row['run_id'],controller_output=str(controller),launch_pending=True)
 
     def acquire_startup_gate(self):
         """Serialize reservation publication; legacy mode also holds through init."""
@@ -1051,21 +1097,17 @@ class Batch:
             self.worker_state('controller_starting',run_id=runid,startup_deadline_unix=row['startup_deadline_unix'])
             remote=shlex.join(['env','PYTHONPATH='+str(self.source/'src'),self.c['sim_python'],
                 '-m','manipulation_agent.mcp_server','--bridge',f'http://127.0.0.1:{port}'])
-            cmd=[sys.executable,str(self.source/'scripts/run_codex_controller.py'),'--model',self.manifest['model'],
+            cmd=controller_prefix(self.source,self.manifest,self.c)+['--model',self.manifest['model'],
                  '--instruction',row['instruction'],'--mcp-command',self.c['ssh'][0],
                  '--mcp-args-json',json.dumps(self.c['ssh'][1:]+[remote]),'--output',str(controller),
                  '--timeout',str(seconds if seconds is not None else 0),'--execution-clock-command-json',
                  json.dumps(self.execution_clock_command(clock_path,seconds,row=row)),
                  '--agent-profile',self.manifest['agent_profile'],'--goal-skill',self.manifest.get('goal_skill','hierarchical')]
-            if self.manifest.get('model_reasoning_effort'):
-                cmd += ['--reasoning-effort',self.manifest['model_reasoning_effort']]
-            if self.c.get('model_provider_profile'):
-                cmd += ['--model-provider-profile',self.c['model_provider_profile']]
-            if self.c.get('model_provider_gateway'):
-                cmd += ['--model-provider-gateway',self.c['model_provider_gateway']]
-            if self.c.get('isolate_client_storage'):cmd.append('--isolate-client-storage')
+            cmd+=controller_options(self.manifest,self.c)
+            self.record_inference_pending(row,controller)
             with controller_log.open('w') as log:
                 process=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,env=self.environment)
+                self.record_inference_controller(row,process.pid,controller)
                 self.update(row,controller_wrapper_pid=process.pid,controller_host=os.uname().nodename,
                             controller_interpreter=sys.executable)
                 self.wait_controller(row,process,controller)
@@ -1332,24 +1374,21 @@ class Batch:
         self.update(row,stage='controller_starting' if row.get('execution_clock_path') else 'policy_running',
                     bridge_ready_at=now(),simulator_pid=spec['simulator_pid'])
         remote=shlex.join(['env','PYTHONPATH='+str(runtime/'src'),self.c['sim_python'],'-m','manipulation_agent.mcp_server','--bridge',f'http://127.0.0.1:{port}'])
-        cmd=[sys.executable,str(runtime/'scripts/run_codex_controller.py'),'--model',self.manifest['model'],
+        cmd=controller_prefix(runtime,self.manifest,self.c)+['--model',self.manifest['model'],
              '--instruction',row['instruction'],'--mcp-command',self.c['ssh'][0],
              '--mcp-args-json',json.dumps(self.c['ssh'][1:]+[remote]),'--output',str(controller),
              '--timeout',str(self.manifest['model_timeout_seconds'] or 0),'--agent-profile',self.manifest['agent_profile'],
              '--goal-skill',self.manifest.get('goal_skill','hierarchical')]
-        if self.manifest.get('model_reasoning_effort'):
-            cmd += ['--reasoning-effort',self.manifest['model_reasoning_effort']]
-        if self.c.get('model_provider_profile'):
-            cmd += ['--model-provider-profile',self.c['model_provider_profile']]
-        if self.c.get('model_provider_gateway'):
-            cmd += ['--model-provider-gateway',self.c['model_provider_gateway']]
+        cmd+=controller_options(self.manifest,self.c)
         if row.get('execution_clock_path'):
             cmd+=['--execution-clock-command-json',json.dumps(self.execution_clock_command(
                 row['execution_clock_path'],row.get('episode_timeout_seconds',self.manifest['model_timeout_seconds']),runtime,row=row))]
         elif row.get('episode_deadline_unix'):cmd+=['--deadline-unix',str(row['episode_deadline_unix'])]
+        self.record_inference_pending(row,controller)
         with (self.root/'logs'/f"{row['run_id']}_controller.log").open('x') as log:
             process=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,
                 env={**self.environment,'PYTHONPATH':str(runtime/'src')})
+        self.record_inference_controller(row,process.pid,controller)
         self.update(row,controller_wrapper_pid=process.pid,controller_host=os.uname().nodename,controller_interpreter=sys.executable)
         self.journal('READY adopted initialization '+row['run_id']+'; first model policy starts against the unchanged original simulator and source.')
         return process
@@ -1435,11 +1474,13 @@ class Batch:
                 if not capacity.acquire(capacity_key,adopting=adopting is not None):
                     self.worker_state('waiting_for_capacity');time.sleep(poll);continue
                 lease=None;row=None;paths=None;cleared=True
+                self._worker_local.inference_lease=None
                 try:
                     if not adopting and not self.acquire_startup_gate():continue
                     lease=self.acquire_worker_lease(adopting=adopting)
                     if lease is None:continue
                     self._worker_local.lease=lease
+                    if not self.acquire_inference_resources(adopting):continue
                     if adopting:
                         row=inflight.pop(0);cleared=False;paths=self.adopt_one(row)
                     else:
@@ -1470,12 +1511,14 @@ class Batch:
                         self.worker_state('disabled',reason=str(exc));return
                 finally:
                     try:
+                        inference=getattr(self._worker_local,'inference_lease',None)
+                        if inference:inference.release(cleared=True)
                         if lease:lease.release(cleared=cleared)
                     except Exception as exc:
                         if row is not None:self.update(row,lease_metadata_cleanup_error=f'{type(exc).__name__}: {exc}')
                         self.journal('LEASE METADATA CLEANUP '+config['id']+': '+str(exc))
                     finally:
-                        self._worker_local.lease=None;self.release_startup_gate()
+                        self._worker_local.lease=None;self._worker_local.inference_lease=None;self.release_startup_gate()
                         capacity.release(capacity_key,preserve=adopting is not None and adopting in inflight)
                     if row is None:time.sleep(poll)
                 # GPU and host capacity are free before any bulk copy or decode.

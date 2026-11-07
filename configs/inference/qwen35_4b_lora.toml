@@ -1,0 +1,6 @@
+# All online input settings come from the same base model as the base arm.
+python = "${QWEN_PYTHON}"
+model = "${QWEN_MODEL}"
+adapter = "${QWEN_ADAPTER}"
+device = "cuda:0"
+gpu_uuid = "${QWEN_GPU_UUID}"

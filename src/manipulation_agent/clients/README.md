@@ -22,6 +22,13 @@ arguments and reports `available`, `unavailable`, or `unsupported` with exit 0 o
 A probe establishes executable/version/required CLI flags only, not authentication,
 image delivery, model execution, or task success.
 
+`--client qwen --qwen-config FILE` adds a local Qwen3.5-4B base/PEFT client with
+the same project prompt, native MCP schemas, original four-view RGB and full
+public history. It does not apply SFT coordinates, image budgets or compression.
+See [native online execution](../../../docs/qwen_online.md). Its registration
+probe is not a dependency/model/GPU validation; preparation checks the configured
+interpreter. The existing Codex argv and low default are unchanged.
+
 Codex keeps its read-only sandbox, disabled unrelated tools, profile allowlist and
 optional bubblewrap session storage. OpenCode prepares a project-local primary
 agent and deny-by-default permissions allowing only selected manipulation tools.

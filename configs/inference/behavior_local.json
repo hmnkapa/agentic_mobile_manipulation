@@ -1,0 +1,56 @@
+{
+  "batch": "/home/liqi/agentic_mobile_manipulation/operations/qwen_local_runtime",
+  "reports": "/home/liqi/agentic_mobile_manipulation/operations/qwen_local_runtime/reports",
+  "ssh": [
+    "/home/liqi/agentic_mobile_manipulation/.venv/bin/python",
+    "/home/liqi/agentic_mobile_manipulation/scripts/local_worker_transport.py",
+    "--env",
+    "/home/liqi/agentic_mobile_manipulation/configs/inference/behavior_local_env.sh",
+    "local-v02"
+  ],
+  "data_root": "/home/liqi/agentic_mobile_manipulation/operations/runtime_local",
+  "sim_python": "/home/liqi/agentic_mobile_manipulation/operations/runtime_local/.venv/bin/python",
+  "sim_env": "/home/liqi/agentic_mobile_manipulation/configs/inference/behavior_local_env.sh",
+  "base_port": 60400,
+  "workers": [
+    {
+      "id": "local-gpu1",
+      "gpu": 1,
+      "expected_gpu_uuid": "GPU-eb6d2cfb-d887-6805-74e8-fa2e37a7e02f"
+    }
+  ],
+  "minimum_free_gpu_mib": 14336,
+  "memory_budget_gib": 28,
+  "simulator_memory_max": "28G",
+  "startup_memory_gib": 12,
+  "adaptive_memory_admission": true,
+  "memory_admission_profile": "throughput",
+  "adaptive_host_slot_count": 1,
+  "host_slot_memory_gib": 28,
+  "host_worker_memory_budget_gib": {"local-v02": null},
+  "shared_lease_dir": "/home/liqi/agentic_mobile_manipulation/operations/resource_leases_local",
+  "simulator_appdata_path": "/home/liqi/agentic_mobile_manipulation/operations/runtime_local/cache/behavior100/gpu1",
+  "simulator_tmpdir": "/home/liqi/agentic_mobile_manipulation/operations/runtime_local/tmp/behavior100/gpu1",
+  "simulator_env": {
+    "MAS_VIDEO_RENDER_STRIDE": "1",
+    "MAS_VIDEO_RENDER_FLUSHES": "4",
+    "MAS_LOCAL_MANIPULATION": "1",
+    "MAS_RENDERER_PIXEL_OWNER": "1"
+  },
+  "isolate_client_storage": false,
+  "expected_task_count": 100,
+  "max_active_workers": 1,
+  "resource_poll_seconds": 15,
+  "archive_workers": 1,
+  "max_pending_archives": 1,
+  "startup_timeout_seconds": 1800,
+  "cleanup_grace_seconds": 120,
+  "cleanup_retry_seconds": 15,
+  "worker_yield_seconds": 1,
+  "publication_retry_seconds": 5,
+  "publication_flush_seconds": 10,
+  "asset_preflight_timeout_seconds": 180,
+  "stop_on_infrastructure_failure": true,
+  "export_spectator_video": true,
+  "native_fault_capture": false
+}

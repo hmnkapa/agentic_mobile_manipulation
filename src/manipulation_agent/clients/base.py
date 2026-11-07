@@ -16,11 +16,13 @@ from .events import parse_events, successful_finish_event
 
 def run_process(project: PreparedProject, output: Path, timeout: float | None,
                 on_start: Callable[[int], None] | None = None, *,
-                event_client: str = 'codex', finish_exit_grace: float = 5.0) -> ClientRunResult:
+                event_client: str = 'codex', finish_exit_grace: float = 5.0,
+                model_startup_watchdog: float | None = None) -> ClientRunResult:
     started = time.monotonic()
     timed_out = False
     finish_at = finish_monotonic = None
     cleanup_reason = None
+    model_ready = False
     kwargs = {"start_new_session": True, "text": True}
     if project.cwd is not None:
         kwargs["cwd"] = str(project.cwd)
@@ -40,7 +42,7 @@ def run_process(project: PreparedProject, output: Path, timeout: float | None,
                 except subprocess.TimeoutExpired:
                     pass
                 first = False
-                if event_client == 'codex' and finish_at is None:
+                if event_client in {'codex', 'qwen'} and finish_at is None:
                     while True:
                         offset = stream.tell()
                         line = stream.readline()
@@ -59,6 +61,17 @@ def run_process(project: PreparedProject, output: Path, timeout: float | None,
                 if process.poll() is not None:
                     finished = finish_at or time.time()
                     break
+                if model_startup_watchdog is not None and not model_ready:
+                    path=output/'qwen_runtime.json'
+                    try:
+                        state=json.loads(path.read_text())
+                        model_ready=bool(state.get('model_ready_at'))
+                    except (OSError,ValueError):
+                        pass
+                    if not model_ready and time.monotonic()-started>=model_startup_watchdog:
+                        finished=time.time()
+                        cleanup_reason='model_initialization_watchdog'
+                        break
                 if finish_monotonic is not None:
                     if time.monotonic() - finish_monotonic >= finish_exit_grace:
                         finished = finish_at
