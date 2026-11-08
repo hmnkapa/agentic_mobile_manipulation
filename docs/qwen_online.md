@@ -172,9 +172,23 @@ thinking 使用基座模板默认，基座与 LoRA 相同。
 原生工具 schema 仍由 harness 校验，非法坐标不会被夹紧、缩放或替换。
 MCP 派发后发生传输异常记录为 execution_uncertain，不自动重发动作。
 
+原生 XML 参数兼容模板的标量写法：非字符串参数同时接受 `None/True/False`
+和 JSON 的 `null/true/false`；nullable 字符串参数中的 `None/null` 表示空值。
+普通字符串及其空白原样保留，对象和数组内部仍须使用严格 JSON。
+兼容解码不修正参数类型、坐标或其他语义错误，这些继续交给 harness 校验；
+离线评估解析器仍使用原有严格规则。
+
+每次响应的全部工具调用解析通过后才派发。缺少 `</think>`、损坏的工具调用结构、
+未知工具、非法参数编码或结束时没有工具调用，均作为可恢复的格式错误：
+客户端在同一会话中追加来源为 `qwen_native_client_protocol` 的 user 反馈，
+说明错误码、可定位的工具/参数、当前响应未执行任何工具，并请求重新生成完整调用。
+原有有效历史和四路图片继续保留；格式重试不会自动 initialize、look 或增加 act/look 计数。
+连续格式失败没有次数上限，直到生成有效调用，或遇到上下文耗尽等运行故障。
+该恢复仅适用于派发前的格式解析，OOM、上下文耗尽和 execution_uncertain 仍按故障处理。
+
 所有公共历史与图片都保留。没有累计动作、轮数、token 或墙钟截止。
 单次输出在 EOS 或原生剩余上下文处结束；没有继承离线 2048 输出上限或 17408 输入预算。
-上下文耗尽、OOM、格式错误和缺少正式 finish 都保留为故障，交现有监督器收尾。
+上下文耗尽、OOM 等终止故障交现有监督器收尾；缺少正式 finish 仍单独记录。
 模型加载有独立的 1800 秒初始化 watchdog；它不限制任务执行时间。
 
 ## 批量、证据及验证
@@ -191,6 +205,10 @@ qwen_config，并须声明模拟器 expected_gpu_uuid。模型与模拟器使用
 附加的 `qwen_request.json`、`qwen_inputs.json`、`qwen_runtime.json`、
 `generations.jsonl` 和 `received_images.jsonl` 保存公共输入、配置、权重、原始生成、
 token 指纹和实际图片证据。原始 think 内容不冒充公开 reasoning summary。
+失败生成仍完整保存在 `generations.jsonl`；`model_events.jsonl` 中的
+`generation.rejected` 是非终止诊断，记录轮次、连续失败次数、结构化错误、
+实际反馈消息及零派发标记。每次格式失败也记录 `turn.completed` 的 token 用量，
+其 status 为 `retrying`，不会生成 `turn.failed` 或虚构 MCP 工具回执。
 成功仍读取 episode 的独立官方评估记录，finish、退出及录像质量分别报告。
 
 ```bash
@@ -209,3 +227,9 @@ PYTHONPATH=src:tests python -m pytest -q \
 真实 CPU 基座生成暴露了本地快照 EOS 与 tokenizer 回合结束 token 不一致，已修正在线停止规则；
 修正后的真权重检查和 Codex/基座/LoRA 的 OmniGibson 单任务验收按用户要求暂缓。
 已有生成诊断和失败记录保留；不将这些组件记录计为自主任务成功。
+
+2026-11-08：原生标量兼容和格式反馈恢复完成组件验收。CPU MCP fixture 覆盖连续
+六次格式失败后继续执行、整轮零部分派发、失败用量记录及终止故障边界；真实 processor
+验证 `None/True/False` 历史调用往返解析，以及反馈消息加入后四路 RGB 编码不变。
+三个历史故障样本已重放，原始记录保留。验证记录位于
+`operations/qwen_native_20261107/format_recovery_20261108/`；本次未加载模型权重或启动新 BEHAVIOR 批次。

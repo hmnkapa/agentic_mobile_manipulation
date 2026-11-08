@@ -81,6 +81,65 @@ def test_native_parser_never_converts_or_repairs_arguments():
     assert parse_response(xml('initialize',{'extra':'preserve'}),tool_specs())[1][0]['arguments']=={'extra':'preserve'}
 
 
+@pytest.mark.parametrize('literal', ['None', 'null'])
+def test_native_nullable_parameters_accept_template_and_json_scalars(literal):
+    calls = [
+        {'name': 'act', 'arguments': {'primitive': 'release', 'revision': 0, 'target': None,
+                                    'placement_yaw_degrees': None, 'wait_seconds': None}},
+        {'name': 'task_notes', 'arguments': {'operation': 'read', 'content': None, 'expected_version': None}},
+    ]
+    raw = '\n'.join(xml(call['name'], call['arguments']) for call in calls)
+    raw = raw.replace('\nnull\n', '\r\n  ' + literal + '  \r\n')
+    assert parse_response(raw, tool_specs())[1] == calls
+
+
+@pytest.mark.parametrize(('literal', 'expected'), [
+    ('True', True), ('False', False), ('true', True), ('false', False), ('None', None), ('null', None),
+])
+def test_native_scalar_decoding_does_not_coerce_invalid_argument_types(literal, expected):
+    # Even a boolean/null in an integer field must reach schema validation as
+    # that exact type, rather than becoming a valid revision through coercion.
+    args = parse_response(xml('look', {'revision': literal, 'yaw_degrees': 0}), tool_specs())[1][0]['arguments']
+    assert args['revision'] is expected
+
+
+@pytest.mark.parametrize('value', ['None', 'null', 'True', 'False', '  None\nnull  \n', '"None"'])
+def test_native_string_parameters_preserve_literal_values_and_whitespace(value):
+    args = {'outcome': 'blocked', 'reason': value}
+    assert parse_response(xml('finish', args), tool_specs())[1][0]['arguments'] == args
+    if value not in ('None', 'null'):
+        notes = {'operation': 'write', 'content': value, 'expected_version': 0}
+        assert parse_response(xml('task_notes', notes), tool_specs())[1][0]['arguments'] == notes
+
+
+@pytest.mark.parametrize('value', [
+    '{"point": [None, 0]}', '{"point": [True, False]}', "{'point': [0, 0]}", '(0, 0)',
+    '{"point": [0, 0], "point": [1, 1]}', '{"point": [NaN, 0]}', '[Infinity]', '[1e999]',
+    '__import__("os").getpid()',
+])
+def test_native_nested_parameters_remain_strict_json_with_error_location(value):
+    raw = xml('act', {'target': value})
+    with pytest.raises(ConversionError) as raised:
+        parse_response(raw, tool_specs())
+    assert raised.value.record() == {
+        'code': 'invalid_parameter_json', 'message': 'Non-string XML parameter must contain strict JSON',
+        'tool': 'act', 'parameter': 'target',
+    }
+
+
+def test_native_nested_json_values_are_preserved_without_schema_repairs():
+    target = {'point': [None, True, False], 'literal': 'None', 'nested': {'key': None}}
+    assert parse_response(xml('act', {'target': target}), tool_specs())[1][0]['arguments']['target'] == target
+
+
+def test_native_compatibility_does_not_relax_offline_parser():
+    from manipulation_agent.training.rollout_metrics import parse_tool_call
+    raw = xml('act', {'target': 'None'})
+    assert parse_response(raw, tool_specs())[1][0]['arguments']['target'] is None
+    with pytest.raises(ConversionError, match='strict JSON'):
+        parse_tool_call(raw, native_tools(tool_specs()))
+
+
 def test_multiple_calls_are_serializable_without_loss():
     note='  line one\nline two\n '
     args={'operation':'write','content':note,'expected_version':0}

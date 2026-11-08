@@ -13,8 +13,8 @@ import uuid
 from ...clients.events import successful_finish_event
 from ...records import now, write_json, source_version
 from ...training.artifacts import fingerprint, model_manifest
-from ...sft.common import file_hash
-from .protocol import native_tools, parse_response, receipt_message
+from ...sft.common import ConversionError, file_hash
+from .protocol import native_tools, parse_response, protocol_error_message, receipt_message
 from .resources import process_start
 
 
@@ -62,6 +62,7 @@ async def run(request, output, backend):
                        'prompt': request['prompt'], 'tools': request['tools'],
                        'project_input_sha256': fingerprint([request['instructions'], request['prompt'], request['tools']])})
             turn = 0
+            consecutive_failures = 0
             while True:
                 turn += 1
                 emit('turn.started')
@@ -72,12 +73,27 @@ async def run(request, output, backend):
                        'messages_sha256': fingerprint(messages), **generation})
                 if generation['finish_reason'] != 'eos':
                     raise RuntimeError('context_exhausted_during_generation')
-                public, calls = parse_response(generation['raw_response'], request['tools'],
-                    thinking_prefix=generation.get('generation_prefix_has_think',False))
+                usage = {'input_tokens': generation['input_tokens'],
+                         'output_tokens': generation['generated_tokens']}
+                # Parse the entire response before publishing or dispatching any
+                # call. Only pre-dispatch protocol errors may be regenerated.
+                try:
+                    public, calls = parse_response(generation['raw_response'], request['tools'],
+                        thinking_prefix=generation.get('generation_prefix_has_think',False))
+                    if not calls:
+                        raise ConversionError('missing_tool_call',
+                                              'Response ended without a tool call or formal finish')
+                except ConversionError as exc:
+                    consecutive_failures += 1
+                    feedback = protocol_error_message(exc)
+                    messages.append(feedback)
+                    emit('generation.rejected', turn=turn, consecutive_failures=consecutive_failures,
+                         error=exc.record(), feedback=feedback, dispatched_tool_calls=0)
+                    emit('turn.completed', status='retrying', usage=usage)
+                    continue
+                consecutive_failures = 0
                 if public.strip():
                     emit('item.completed', item={'type': 'agent_message', 'id': str(uuid.uuid4()), 'text': public})
-                if not calls:
-                    raise RuntimeError('Model ended its response without a tool call or formal finish')
                 assistant = {'role': 'assistant', 'content': public, 'tool_calls': []}
                 for call in calls:
                     call['id'] = str(uuid.uuid4())
@@ -97,14 +113,12 @@ async def run(request, output, backend):
                     result = receipt.model_dump(by_alias=True, exclude_none=True)
                     event = emit('item.completed', item={**item, 'result': result})
                     if successful_finish_event(event):
-                        emit('turn.completed', usage={'input_tokens': generation['input_tokens'],
-                                                     'output_tokens': generation['generated_tokens']})
+                        emit('turn.completed', usage=usage)
                         return
                     message, images = receipt_message(result, call['name'], call['id'], output)
                     messages.append(message)
                     append(output / 'received_images.jsonl', {'turn': turn, 'call_id': call['id'], 'images': images})
-                emit('turn.completed', usage={'input_tokens': generation['input_tokens'],
-                                             'output_tokens': generation['generated_tokens']})
+                emit('turn.completed', usage=usage)
 
 
 def main():

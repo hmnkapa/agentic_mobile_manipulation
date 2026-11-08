@@ -5,7 +5,7 @@ import hashlib
 from pathlib import Path
 import re
 
-from ...sft.common import ConversionError, loads
+from ...sft.common import ConversionError, dumps, loads
 from ...training.rollout_metrics import _parameter_value
 
 
@@ -13,6 +13,33 @@ def native_tools(catalog):
     return [{'type': 'function', 'function': {'name': spec['name'],
             'description': spec.get('description', ''), 'parameters': deepcopy(spec['inputSchema'])}}
             for spec in catalog]
+
+
+def _native_parameter_value(text, schema):
+    # Qwen's template renders scalar values with Jinja's string filter, but
+    # renders mappings/sequences with tojson. Keep the offline parser strict.
+    kind = schema.get('type')
+    kinds = kind if isinstance(kind, list) else [kind]
+    literal = text.strip()
+    if literal == 'None' and ('null' in kinds or 'string' not in kinds):
+        return None
+    if 'string' not in kinds and literal in ('True', 'False'):
+        return literal == 'True'
+    return _parameter_value(text, schema)
+
+
+def protocol_error_message(error):
+    """Client feedback for an unexecuted response, not a fabricated MCP receipt."""
+    instruction = ('Regenerate a complete native tool-call response using the original tool catalog. '
+                   'Close all tool_call, function and parameter tags. '
+                   'No tools from the rejected response were executed. '
+                   'Continue from the current history and observations.')
+    if error.code == 'unfinished_thinking':
+        instruction = 'Close the thinking block with </think> before any <tool_call>. ' + instruction
+    return {'role': 'user', 'content': dumps({
+        'source': 'qwen_native_client_protocol', 'error': error.record(),
+        'dispatched_tool_calls': 0, 'retry_instruction': instruction,
+    })}
 
 
 def parse_response(raw, catalog, *, thinking_prefix=False):
@@ -42,20 +69,26 @@ def parse_response(raw, catalog, *, thinking_prefix=False):
     calls = []
     for match in matches:
         function = re.fullmatch(r'\s*<function=([^<>\s=]+)>(.*?)</function>\s*', match[1], re.DOTALL)
-        if function is None or function[1] not in specs:
+        if function is None:
             raise ConversionError('unknown_or_malformed_tool', 'Tool is not in the original MCP catalog')
         name, body = function[1], function[2]
+        if name not in specs:
+            raise ConversionError('unknown_or_malformed_tool', 'Tool is not in the original MCP catalog', tool=name)
         arguments, end = {}, 0
         properties = specs[name].get('properties', {})
         for parameter in re.finditer(r'<parameter=([^<>\s=]+)>(.*?)</parameter>', body, re.DOTALL):
             key = parameter[1]
             if body[end:parameter.start()].strip() or key in arguments:
-                raise ConversionError('malformed_parameter', 'Ambiguous native tool parameter')
+                raise ConversionError('malformed_parameter', 'Ambiguous native tool parameter',
+                                      tool=name, parameter=key)
             # Unknown parameters are preserved for the harness to reject.
-            arguments[key] = _parameter_value(parameter[2], properties.get(key, {'type': 'string'}))
+            try:
+                arguments[key] = _native_parameter_value(parameter[2], properties.get(key, {'type': 'string'}))
+            except ConversionError as exc:
+                raise ConversionError(exc.code, str(exc), tool=name, parameter=key) from exc
             end = parameter.end()
         if body[end:].strip():
-            raise ConversionError('malformed_parameter', 'Incomplete native tool parameter')
+            raise ConversionError('malformed_parameter', 'Incomplete native tool parameter', tool=name)
         calls.append({'name': name, 'arguments': arguments})
     return public, calls
 

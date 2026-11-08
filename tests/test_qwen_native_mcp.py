@@ -18,6 +18,7 @@ from manipulation_agent.clients.events import parse_events
 from manipulation_agent.clients.qwen.protocol import native_tools
 from manipulation_agent.clients.qwen.worker import run
 from manipulation_agent.tools import tool_specs
+from manipulation_agent.training.artifacts import TrainingError, fingerprint
 from manipulation_agent.vision_policy import system_prompt
 from test_qwen_native import xml
 
@@ -167,3 +168,140 @@ def test_uncertain_dispatch_is_not_retried(mock_episode,tmp_path,monkeypatch):
     process.wait(timeout=15)
     record=json.loads((episode/'run.json').read_text())
     assert record['actions']==1
+
+
+def test_format_errors_regenerate_without_partial_dispatch_or_episode_reset(mock_episode, tmp_path):
+    url, episode, process = mock_episode
+    output = tmp_path / 'controller'; output.mkdir()
+    request = {'instructions': system_prompt('skills'), 'prompt': 'Scripted protocol recovery fixture.',
+               'tools': tool_specs('skills'), 'mcp_command': sys.executable,
+               'mcp_args': ['-m', 'manipulation_agent.mcp_server', '--bridge', url]}
+
+    class RecoveryFixture:
+        def __init__(self):
+            self.messages = []
+            self.responses = []
+
+        def generate(self, messages, tools):
+            i = len(self.messages)
+            assert i < 10, 'Unexpected retry after fixture completion'
+            self.messages.append(deepcopy(messages))
+            receipts = [m for m in messages if m['role'] == 'tool']
+            assert len(receipts) == (0 if i == 0 else 1 if i < 8 else 2)
+            if i == 0:
+                raw = xml('initialize', {})
+            else:
+                observed = json.loads(receipts[-1]['content'][0]['text'])['observation']
+                act = xml('act', {'primitive': 'wait', 'revision': observed['revision'], 'target': None,
+                                 'placement_yaw_degrees': None, 'wait_seconds': .1})
+                # Match Qwen's native serialization, including on the successful retry.
+                act = act.replace('\nnull\n', '\nNone\n')
+                if i == 1:
+                    raw = 'Unclosed synthetic thinking. ' + act
+                elif i == 2:
+                    # The first call is valid; the second must prevent BOTH dispatches.
+                    raw = act + '\n<tool_call><function=look><parameter=revision>0</parameter>' \
+                                '<parameter=revision>1</parameter></function></tool_call>'
+                elif i == 3:
+                    raw = xml('unavailable_tool', {})
+                elif i in (4, 8):
+                    raw = 'No tool call in this synthetic response.'
+                elif i == 5:
+                    raw = xml('act', {'target': '{"point": [None, 0]}'})
+                elif i == 6:
+                    raw = act.replace('</tool_call>', '')
+                elif i == 7:
+                    raw = act
+                else:
+                    raw = xml('finish', {'outcome': 'blocked', 'reason': 'CPU recovery fixture complete.'})
+            if i != 1:
+                raw = '</think>\n' + raw
+            raw += '<|im_end|>'
+            self.responses.append(raw)
+            return {'raw_response': raw, 'input_tokens': 100 + i, 'generated_tokens': 20,
+                    'finish_reason': 'eos', 'generation_prefix_has_think': True}
+
+    backend = RecoveryFixture(); stream = io.StringIO()
+    with contextlib.redirect_stdout(stream):
+        asyncio.run(run(request, output, backend))
+    path = output / 'model_events.jsonl'; path.write_text(stream.getvalue())
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    rejected = [event for event in events if event['type'] == 'generation.rejected']
+    assert [e['consecutive_failures'] for e in rejected] == [1, 2, 3, 4, 5, 6, 1]
+    assert [e['error']['code'] for e in rejected] == [
+        'unfinished_thinking', 'malformed_parameter', 'unknown_or_malformed_tool',
+        'missing_tool_call', 'invalid_parameter_json', 'malformed_tool_call', 'missing_tool_call',
+    ]
+    assert rejected[1]['error']['tool'] == 'look' and rejected[1]['error']['parameter'] == 'revision'
+    assert rejected[2]['error']['tool'] == 'unavailable_tool'
+    assert rejected[4]['error']['tool'] == 'act' and rejected[4]['error']['parameter'] == 'target'
+    for event in rejected:
+        feedback = event['feedback']
+        assert event['dispatched_tool_calls'] == 0 and feedback['role'] == 'user'
+        assert backend.messages[event['turn']][-1] == feedback
+        body = json.loads(feedback['content'])
+        assert body['source'] == 'qwen_native_client_protocol'
+        assert body['dispatched_tool_calls'] == 0 and body['error'] == event['error']
+    assert '</think>' in json.loads(rejected[0]['feedback']['content'])['retry_instruction']
+    assert not any(e['type'] == 'turn.failed' for e in events)
+    assert not any(e.get('item', {}).get('type') == 'agent_message' for e in events)
+    completions = [e for e in events if e['type'] == 'turn.completed']
+    assert len(completions) == 10
+    assert [e['usage'] for e in completions] == [
+        {'input_tokens': 100 + i, 'output_tokens': 20} for i in range(10)]
+    assert sum(e.get('status') == 'retrying' for e in completions) == 7
+    generations = [json.loads(line) for line in (output / 'generations.jsonl').read_text().splitlines()]
+    assert [g['raw_response'] for g in generations] == backend.responses
+    assert [g['messages_sha256'] for g in generations] == [fingerprint(m) for m in backend.messages]
+    # Valid history, including the original images, survives every rejection.
+    assert all(messages[:4] == backend.messages[1] for messages in backend.messages[1:])
+    images = [part for message in backend.messages[-1] if message['role'] == 'tool'
+              for part in message['content'] if part['type'] == 'image']
+    assert len(images) == 8 and all(Path(part['image']).is_file() for part in images)
+    parsed = parse_events(path, 'qwen')
+    assert parsed.formal_finish_observed and parsed.tools_called == ['initialize', 'act', 'finish']
+    assert not any(e['kind'] == 'client_error' for e in parsed.canonical)
+    assert len([e for e in parsed.canonical if e['kind'] == 'usage']) == 10
+    process.wait(timeout=15)
+    record = json.loads((episode / 'run.json').read_text())
+    assert record['actions'] == 1 and record['agent_steps'] == 1
+    assert record['execution_limit_policy']['episode_budget_policy'] == 'unbounded'
+
+
+@pytest.mark.parametrize('failure', ['context_limit', 'context_exhausted', 'inference_out_of_memory'])
+def test_generation_fault_after_format_feedback_still_terminates(mock_episode, tmp_path, failure):
+    from manipulation_agent.bridge import rpc
+    from manipulation_agent.clients.qwen.worker import failure_record
+    url, episode, process = mock_episode
+    output = tmp_path / 'controller'; output.mkdir()
+    request = {'instructions': system_prompt('skills'), 'prompt': 'Scripted terminal-fault fixture.',
+               'tools': tool_specs('skills'), 'mcp_command': sys.executable,
+               'mcp_args': ['-m', 'manipulation_agent.mcp_server', '--bridge', url]}
+
+    class FailureFixture:
+        turn = 0
+
+        def generate(self, messages, tools):
+            self.turn += 1
+            assert self.turn <= 3, 'Terminal generation fault was retried'
+            if self.turn == 3:
+                assert json.loads(messages[-1]['content'])['error']['code'] == 'missing_tool_call'
+                if failure != 'context_limit':
+                    raise TrainingError(failure, 'Synthetic terminal inference fault')
+            return {'raw_response': xml('initialize', {}) if self.turn == 1 else 'Incomplete fixture response',
+                    'input_tokens': 100, 'generated_tokens': 20,
+                    'finish_reason': 'context_limit' if self.turn == 3 else 'eos'}
+
+    backend = FailureFixture(); stream = io.StringIO()
+    with contextlib.redirect_stdout(stream), pytest.raises(Exception) as raised:
+        asyncio.run(run(request, output, backend))
+    assert backend.turn == 3
+    expected = 'context_exhausted_during_generation' if failure == 'context_limit' else failure
+    assert expected in json.dumps(failure_record(raised.value))
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert len([e for e in events if e['type'] == 'generation.rejected']) == 1
+    assert [e['item']['tool'] for e in events if e['type'] == 'item.started'] == ['initialize']
+    rpc(url, 'finish', {'outcome': 'aborted', 'reason': 'CPU terminal-fault fixture cleanup'},
+        'fixture-supervisor-finish', origin='supervisor')
+    process.wait(timeout=15)
+    assert json.loads((episode / 'run.json').read_text())['actions'] == 0
