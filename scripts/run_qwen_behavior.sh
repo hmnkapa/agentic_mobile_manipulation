@@ -145,6 +145,8 @@ The controller host loads Qwen locally. CUDA inference and simulation must use
 different physical GPUs; simulator workers need expected_gpu_uuid in the template.
 Execution requires a clean frozen checkout. Preparation alone permits local edits.
 Episodes remain unbounded; --limit selects tasks, never actions or model tokens.
+Execution and --resume print live task stages, model tool calls/results and
+independent evaluation, with a waiting heartbeat every 30 seconds.
 USAGE
 }
 
@@ -203,9 +205,9 @@ if [[ -n "$resume" ]]; then
     runner_config="$(cd -- "$resume" && pwd -P)/runner.json"
     require_frozen_source
     printf 'Resume original supervisor:\n'
-    print_command "$controller_python" "$repo_root/scripts/run_behavior100.py" --config "$runner_config"
+    print_command "$controller_python" "$repo_root/scripts/run_behavior100.py" --config "$runner_config" --console-progress
     cd -- "$repo_root"
-    exec "$controller_python" -u "$repo_root/scripts/run_behavior100.py" --config "$runner_config"
+    exec "$controller_python" -u "$repo_root/scripts/run_behavior100.py" --config "$runner_config" --console-progress
 fi
 
 if [[ -z "$output" ]]; then
@@ -413,11 +415,11 @@ PY
 
 runner_config="$(cd -- "$output" && pwd -P)/runner.json"
 printf 'Original supervisor command:\n'
-print_command "$controller_python" "$repo_root/scripts/run_behavior100.py" --config "$runner_config"
+print_command "$controller_python" "$repo_root/scripts/run_behavior100.py" --config "$runner_config" --console-progress
 if $prepare_only; then
     printf 'Configuration only; no model, simulator or tests started. Resume with:\n'
     print_command "$repo_root/scripts/run_qwen_behavior.sh" --controller-python "$controller_python" --resume "$(dirname -- "$runner_config")"
     exit 0
 fi
 cd -- "$repo_root"
-exec "$controller_python" -u "$repo_root/scripts/run_behavior100.py" --config "$runner_config"
+exec "$controller_python" -u "$repo_root/scripts/run_behavior100.py" --config "$runner_config" --console-progress

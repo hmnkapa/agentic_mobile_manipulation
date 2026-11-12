@@ -35,13 +35,14 @@ class BatchEvidenceTests(unittest.TestCase):
                      'status':'planned','stage':'queued'}]}
                 (root/'manifest.json').write_text(json.dumps(manifest))
                 config={'batch':str(root),'reports':str(reports),'expected_task_count':1,
+                        'supervisor_spool_dir':str(root/'spool'),
                         'workers':[{'id':'fixture-worker','gpu':0,'ssh':['ssh','fixture-host'],
                                     'base_port':36000,'sim_python':sys.executable}]}
                 path=root/'config.json';path.write_text(json.dumps(config))
                 if history is not None:(root/'journal.md').write_text(history)
                 # Exercise the real CLI initialization and publication. Only
                 # checkout identity and the CLI --version probe are fixtures.
-                with patch.object(sys,'argv',['run_behavior100.py','--config',str(path),'--publish-only']), \
+                with patch.object(sys,'argv',['run_behavior100.py','--config',str(path),'--publish-only','--console-progress']), \
                         patch.object(batch,'source_version',return_value={'commit':'fixture','dirty':False}), \
                         patch.object(batch.shutil,'which',return_value='/fixture/codex'), \
                         patch.object(batch.subprocess,'run',return_value=CompletedProcess([],0)) as command:

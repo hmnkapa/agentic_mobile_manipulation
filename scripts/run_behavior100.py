@@ -1564,11 +1564,18 @@ class Batch:
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--limit',type=int);p.add_argument('--publish-only',action='store_true');p.add_argument('--bootstrap-first',action='store_true')
+    p.add_argument('--console-progress',action='store_true',help='Print live task stages, model calls and independent results')
     a=p.parse_args();config=json.loads(a.config.read_text());root=Path(config['batch'])
     with (root/'supervisor.lock').open('w') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        if a.console_progress:print('Initializing supervisor; checking source version and model environment...',flush=True)
         batch=Batch(config)
+        console=None
         try:
+            if a.console_progress:
+                from manipulation_agent.console_progress import ConsoleProgress
+                console=ConsoleProgress(batch)
+                console.start()
             if a.publish_only:batch.publish()
             elif a.bootstrap_first:
                 first=next(r for r in batch.rows if r['status']=='planned')
@@ -1579,6 +1586,7 @@ def main():
                 batch.run(a.limit)
             else:batch.run(a.limit)
         finally:
+            if console is not None:console.close()
             if not batch.storage.close(config.get('publication_flush_seconds',30)):
                 print('Supervisor metadata sync pending; durable local checkpoint: '+str(batch.storage.spool),file=sys.stderr)
                 # Restart-on-failure must retry the durable final checkpoint.
