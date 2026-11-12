@@ -112,6 +112,31 @@ K=2 保持不变；另外 33 条无法达标的训练样本保存在包内 `over
 每次使用唯一目录，不删除失败记录。`--dry-run` 只检查 CPU 启动计划，
 不证明编码、样本覆盖、CUDA 资源或 W&B 登录已验证。冒烟的恢复步骤见下文。
 
+工作根目录使用以下布局：
+
+```text
+/mnt/data/home/liqi/manipulation_sft/
+├── models/
+├── env/
+├── datasets/
+│   ├── lowmem256_20261105/
+│   └── compact64_20261105/
+├── runs/
+├── preflights/
+├── environment_updates/
+├── cache/
+├── simulator_cache/
+└── tmp/
+```
+
+两套本地数据包分别位于
+`/mnt/data/home/liqi/manipulation_sft/datasets/lowmem256_20261105/dataset` 和
+`/mnt/data/home/liqi/manipulation_sft/datasets/compact64_20261105/dataset`；需要使用本地副本时，
+通过 `--data` 指定。默认训练数据仍使用上面的 NAS 发布包。
+SSH 主机公钥记录现位于 `/mnt/data/home/liqi/manipulation_sft/environment_updates/ssh_known_hosts`。
+依赖快照位于 `environment_updates/acceleration_20261105T160710Z/installed-after.freeze.txt`，
+`preflights/img64_compact_acceleration_latest` 指向加速环境的预检目录。
+
 只做 CPU 真实预检，或明确复用一份已有报告：
 
 ```bash
@@ -221,7 +246,7 @@ bash scripts/train_qwen35_4b.sh --gpu 0 \
 
 移除 `--dry-run` 启动训练。全量真实 CPU 编码由新配置独立验证，不复用 img256 或
 未压缩 img64 的编码报告。运行证据在 `operations/sft_compact64_20261105/`，
-完整原生编码报告在 `/mnt/data/home/liqi/manipulation_sft/compact64_20261105/preflight`。
+完整原生编码报告在 `/mnt/data/home/liqi/manipulation_sft/datasets/compact64_20261105/preflight`。
 发布目录的预检仅复用这一轮相同数据字节、模型、配置和代码下的已验证编码缓存。
 
 ## 安装独立环境
@@ -516,12 +541,12 @@ MANIP_TEST_EXPORT=/data/sft_exports/smoke_001 \
 | 转换器整理 | 14 条冻结 golden 一致；[重构与数据完整性记录](/tmp/manipulation_sft_implementation_20261103/refactor_validation.json) |
 | 数据读取 | 2,989 train、334 val、94 来源、9,584 图片完整性检查通过；原包 JSON/JSONL 哈希与基线一致 |
 | CLI、配置与 CPU 边界 | 81 项测试、34 项子测试通过；真实数据 dry-run 不创建输出目录 |
-| 全量真实编码 | 3,323 条全部通过，零图片／标签／工具渲染错误；[完整测量报告](/mnt/data/home/liqi/manipulation_sft/preflight_v6/summary.json) |
-| 17,408 预算资格 | train 927、val 109；复用相同指纹的完整真实编码结果，固定 16/8 覆盖检查通过；[报告](/mnt/data/home/liqi/manipulation_sft/preflight_v7_17408/summary.json) |
-| GPU LoRA 冒烟 | 三次尝试因 CUDA OOM 失败，未得到通过验收的 checkpoint-2；[第一次失败记录](/mnt/data/home/liqi/manipulation_sft/smoke_first_v1/run.json) |
+| 全量真实编码 | 3,323 条全部通过，零图片／标签／工具渲染错误 |
+| 17,408 预算资格 | train 927、val 109；复用相同指纹的完整真实编码结果，固定 16/8 覆盖检查通过 |
+| GPU LoRA 冒烟 | 三次尝试因 CUDA OOM 失败，未得到通过验收的 checkpoint-2 |
 | checkpoint 恢复 | 未执行；缺少验收通过的 checkpoint-2 |
 | checkpoint-4 合并导出 | 未执行；基础模型的 GPU0 加载、有限前向、无图／四图生成另行通过，属于未微调模型探测 |
-| 可复现性与文档 | 实际依赖锁、数据／模型／代码／配置指纹、运行日志和取消记录已保存；GPU 闭环未验证 |
+| 可复现性与文档 | 实际依赖锁及数据／模型／代码／配置指纹保留；GPU 闭环未验证 |
 
 真实长度中位数 28,725，P95 为 404,577，最大 828,233；338 条超过模型声明的 262,144。
 因此 `encoding_passed=true` 与 `full_dataset_trainable=false` 同时成立。全部历史图片保留，
@@ -533,5 +558,5 @@ MANIP_TEST_EXPORT=/data/sft_exports/smoke_001 \
 
 该 PyTorch 2.9.1 构建的实际分配器快照显示：`PYTORCH_ALLOC_CONF` 被忽略，
 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 才生效，尽管会出现弃用提示。
-原始诊断与失败日志保留。资源探测已改为短生命周期子进程，以消除控制进程额外的 CUDA
+资源探测已改为短生命周期子进程，以消除控制进程额外的 CUDA
 上下文；该改动通过 CPU 测试，因用户取消而没有继续 GPU 复测。
