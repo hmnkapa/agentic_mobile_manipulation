@@ -141,6 +141,10 @@ scripts/run_qwen_behavior.sh \
 `--resume` 只接受原运行目录和控制器 Python，不重新选择权重、任务或重试已失败任务。
 中断后的接管和收尾仍由原监督器按进程归属执行。
 
+`simulator_gpu_memory_admission` 控制仿真显存容量准入，未配置时默认为 `true`。
+设为 `false` 会跳过调度预检、GPU 候选筛选和进程内显存容量判断；
+GPU 存在性、UUID、资源锁及其他资源检查继续生效，原显存门槛保留供恢复。
+
 ## 启动原有 episode 和本地控制器
 
 先用已有模拟器环境准备 episode：

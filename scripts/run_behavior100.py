@@ -89,7 +89,7 @@ def worker_configs(config):
     if not lanes:
         raise ValueError('At least one worker is required')
     allowed = {'id', 'gpu', 'ssh', 'data_root', 'sim_python', 'sim_env',
-               'base_port', 'minimum_free_gpu_mib', 'simulator_memory_max',
+               'base_port', 'minimum_free_gpu_mib', 'simulator_gpu_memory_admission', 'simulator_memory_max',
                'simulator_env', 'expected_gpu_uuid', 'memory_budget_gib', 'admission_delay_seconds',
                'simulator_appdata_path', 'simulator_tmpdir', 'startup_memory_gib',
                'validated_driver_version', 'driver_validation_evidence', 'qwen_config'}
@@ -103,6 +103,8 @@ def worker_configs(config):
         if type(gpu) is not int or gpu<0 or not 1024<=port<=65535: raise ValueError('Invalid GPU or port')
         if (host,gpu) in devices or (host,port) in ports: raise ValueError('Worker GPU or port collision')
         env=merged.get('simulator_env',{})
+        if type(merged.get('simulator_gpu_memory_admission',True)) is not bool:
+            raise ValueError('Simulator GPU memory admission must be boolean')
         budget=merged.get('memory_budget_gib',28)
         if type(budget) is not int or not 12<=budget<=28: raise ValueError('Invalid memory budget')
         if merged.get('simulator_memory_max',str(budget)+'G')!=str(budget)+'G':
@@ -153,6 +155,10 @@ def runtime_storage_args(config):
 def driver_admission_args(config):
     version=config.get('validated_driver_version')
     return ['--validated-driver-version',version] if version else []
+
+
+def gpu_memory_admission_args(config):
+    return [] if config.get('simulator_gpu_memory_admission',True) else ['--skip-gpu-memory-admission']
 
 
 def controller_process_alive(pid, output):
@@ -646,6 +652,7 @@ class Batch:
               '--min-free-gpu-mib',str(self.c.get('minimum_free_gpu_mib',0))]
         args += runtime_storage_args(self.c)
         args += driver_admission_args(self.c)
+        args += gpu_memory_admission_args(self.c)
         args += self.memory_policy_args()
         lease=getattr(self._worker_local,'lease',None)
         if lease:args+=['--reserved-host-memory-gib',str(lease.other_reserved_gib(self._config.get('host_slot_memory_gib',28)))]
@@ -1028,6 +1035,7 @@ class Batch:
                 '--light']
             command += runtime_storage_args(self.c)
             command += driver_admission_args(self.c)
+            command += gpu_memory_admission_args(self.c)
             command += self.memory_policy_args()
             # Optional external first-fault capture; no in-process tracing thread.
             # GDB follows the helper's execv into vision_cli and preserves normal

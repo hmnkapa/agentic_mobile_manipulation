@@ -102,7 +102,7 @@ def runtime_storage_readiness(paths):
 
 def preflight(gpu, port, data_root, min_free_gpu_mib=0, memory_budget_gib=28, *, light=False,
               reserved_host_memory_gib=0, runtime_storage_paths=(), memory_policy=None,
-              validated_driver_version=None):
+              validated_driver_version=None, gpu_memory_admission=True):
     # A worker performs the full version/encoder check once. Resource polling
     # only rechecks quantities that can change while it waits for a GPU lease.
     encoding_check = None
@@ -139,20 +139,22 @@ def preflight(gpu, port, data_root, min_free_gpu_mib=0, memory_budget_gib=28, *,
     cg_free = None if cg['memory.max'] == 'max' else int(cg['memory.max'])-int(cg['memory.current'])+cg['reclaimable_estimate']
     with socket.socket() as sock:
         port_free = sock.connect_ex(('127.0.0.1', port)) != 0
-    if min_free_gpu_mib and min_free_gpu_mib<12288:
+    if gpu_memory_admission and min_free_gpu_mib and min_free_gpu_mib<12288:
         raise ValueError('Shared GPU mode requires at least 12 GiB free before each episode')
     if not 12<=memory_budget_gib<=28:
         raise ValueError('Simulator working-memory budget must be between 12 and 28 GiB')
     if not 0<=reserved_host_memory_gib<=1024:
         raise ValueError('Invalid shared host memory reservation')
     imports = source_import_readiness(data_root) if not light else None
-    checks = {'gpu_capacity': (int(selected[3])-int(selected[2])>=min_free_gpu_mib) if min_free_gpu_mib else int(selected[2])<1024,
-              'validated_driver_floor':(tuple(map(int,selected[4].strip().split('.'))) >= (580,65,6)
+    checks = {'validated_driver_floor':(tuple(map(int,selected[4].strip().split('.'))) >= (580,65,6)
                                         or selected[4].strip()==validated_driver_version),
               'host_memory_available_40GiB': int(mem['MemAvailable'].split()[0])*1024 > 40*1024**3,
               'cgroup_reclaimable_headroom': cg_free is None or cg_free > memory_budget_gib*1024**3,
               'data_disk_free_40GiB': shutil.disk_usage(data_root).free > 40*1024**3,
               'bridge_port_free': port_free}
+    if gpu_memory_admission:
+        checks['gpu_capacity'] = ((int(selected[3])-int(selected[2])>=min_free_gpu_mib)
+                                  if min_free_gpu_mib else int(selected[2])<1024)
     host_available=int(mem['MemAvailable'].split()[0])*1024
     checks['host_memory_including_peer_reservations']=host_available>(40+reserved_host_memory_gib)*1024**3
     adaptive = None
@@ -201,7 +203,9 @@ def preflight(gpu, port, data_root, min_free_gpu_mib=0, memory_budget_gib=28, *,
             'runtime_storage':runtime_storage,
             'adaptive_memory':adaptive,
             'host_available_bytes':host_available,'reserved_host_memory_gib':reserved_host_memory_gib,
-            'driver_version':selected[4].strip(),'gpu_policy':{'shared':bool(min_free_gpu_mib),'minimum_free_mib':min_free_gpu_mib},
+            'driver_version':selected[4].strip(),'gpu_policy':{
+                'memory_admission_enabled':gpu_memory_admission,
+                'shared':bool(min_free_gpu_mib),'minimum_free_mib':min_free_gpu_mib},
             'validation_scope': 'dynamic_resources' if light else 'resources_and_static_runtime',
             'status': 'passed' if all(checks.values()) else 'blocked', 'queries': queries}
 
@@ -260,6 +264,8 @@ def main():
     p.add_argument('--gpu',type=int); p.add_argument('--port',type=int); p.add_argument('--unit'); p.add_argument('--run-id')
     p.add_argument('--data-root',type=Path,required=True)
     p.add_argument('--min-free-gpu-mib',type=int,default=0)
+    p.add_argument('--skip-gpu-memory-admission',action='store_true',
+                   help='Skip simulator VRAM capacity admission; keep GPU identity and other resource checks')
     p.add_argument('--memory-budget-gib',type=int,default=28)
     p.add_argument('--validated-driver-version', help='Exact driver version with recorded renderer validation')
     p.add_argument('--light', action='store_true', help='Only recheck dynamic worker resources')
@@ -281,7 +287,8 @@ def main():
                                   reserved_host_memory_gib=a.reserved_host_memory_gib,
                                   runtime_storage_paths=a.runtime_storage_path,
                                   memory_policy=memory_policy,
-                                  validated_driver_version=a.validated_driver_version))); return
+                                  validated_driver_version=a.validated_driver_version,
+                                  gpu_memory_admission=not a.skip_gpu_memory_admission))); return
     row=manifest_task(manifest,a.index)
     if a.run_id:
         import re
@@ -296,7 +303,8 @@ def main():
     result=preflight(a.gpu,a.port,a.data_root,a.min_free_gpu_mib,a.memory_budget_gib,light=a.light,
                      reserved_host_memory_gib=a.reserved_host_memory_gib,
                      runtime_storage_paths=a.runtime_storage_path,
-                     memory_policy=memory_policy, validated_driver_version=a.validated_driver_version)
+                     memory_policy=memory_policy, validated_driver_version=a.validated_driver_version,
+                     gpu_memory_admission=not a.skip_gpu_memory_admission)
     # Persist a second check inside the allocated unit, immediately before startup.
     check_path=a.manifest.parent/'preflight'/f"{row['run_id']}_in_unit.json"
     check_path.write_text(json.dumps(result,indent=2)+'\n')

@@ -301,8 +301,10 @@ class BatchEvidenceTests(unittest.TestCase):
             self.assertEqual(shlex.split(shlex.join(launch)),launch)
             self.assertIs(row['native_fault_capture'],False)
             self.assertNotIn('MAS_NATIVE_FAULT_DIR',retained)
+            self.assertNotIn('--skip-gpu-memory-admission',retained)
 
             runner._config['native_fault_capture']=True
+            runner._config['simulator_gpu_memory_admission']=False
             captured={'index':0,'run_id':'fixture_r2','task':'fixture'}
             runner.run_one(captured,0)
             retained=(runner.root/'launchers/fixture_r2.sh').read_text()
@@ -310,6 +312,7 @@ class BatchEvidenceTests(unittest.TestCase):
             self.assertEqual(command[:5],['/usr/bin/gdb','--batch','-q','-nx','-x'])
             self.assertEqual(command[5],'/source snapshot/scripts/capture_native_fault.gdb')
             self.assertEqual(command[6:9],['--args','/fixture/python','/source snapshot/scripts/behavior100_remote.py'])
+            self.assertIn('--skip-gpu-memory-admission',command)
             self.assertIn('export MAS_NATIVE_FAULT_DIR=/fixture/runs/fixture_r2',retained)
             self.assertIs(captured['native_fault_capture'],True)
 

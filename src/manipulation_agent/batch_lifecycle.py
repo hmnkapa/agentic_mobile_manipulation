@@ -70,7 +70,8 @@ def preferred_gpu_worker(workers, states, host, gpu_csv, *, gpu_available=None):
             continue
         free, used = memory[worker['gpu']]
         minimum = worker.get('minimum_free_gpu_mib', 0)
-        if (minimum and free < minimum) or (not minimum and used >= 1024):
+        if worker.get('simulator_gpu_memory_admission',True) and (
+                (minimum and free < minimum) or (not minimum and used >= 1024)):
             continue
         if gpu_available is not None and not gpu_available(worker):
             continue
