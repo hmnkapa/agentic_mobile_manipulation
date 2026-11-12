@@ -204,7 +204,7 @@ def test_shell_new_prepare_and_resume_enable_progress_without_changing_saved_set
     (source / 'manifest.json').write_text(json.dumps(manifest))
     template = tmp_path / 'template.json'
     template.write_text(json.dumps({'batch': str(source), 'workers': [{
-        'id': 'local-gpu1', 'expected_gpu_uuid': 'GPU-2222-bbbb'}]}))
+        'id': 'local-gpu0', 'expected_gpu_uuid': 'GPU-2222-bbbb'}]}))
     model = tmp_path / 'model'
     model.mkdir()
     capture = tmp_path / 'supervisor-argv.json'

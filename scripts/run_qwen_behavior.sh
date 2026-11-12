@@ -27,20 +27,26 @@ model="/mnt/data/home/liqi/manipulation_sft/models/Qwen3.5-4B/851bf6e806efd8d0a3
 # 4. Weights: empty means base only. All three alternatives are existing PEFT checkpoints.
 # Enable exactly one explicit LoRA path. No automatic latest-checkpoint selection
 # or training recipe inheritance is performed.
-lora=""
-# lora="/mnt/data/home/liqi/manipulation_sft/runs/qwen35_4b_5090_resume_20261106_005600/swift/checkpoint-1122"
+#lora=""
+lora="/mnt/data/home/liqi/manipulation_sft/runs/qwen35_4b_5090_resume_20261106_005600/swift/checkpoint-1122"
 # lora="/mnt/data/home/liqi/manipulation_sft/runs/qwen35_4b_5090_resume_20261106_005600/swift/checkpoint-1120"
 # lora="/mnt/data/home/liqi/manipulation_sft/runs/qwen35_4b_5090_resume_20261106_005600/swift/checkpoint-720"
 
-# 5. Inference GPU: physical UUIDs of the two local 4090s, taken from existing
-# records; they do not indicate current availability. The model runs on this
-# controller host; the default local simulator worker uses the other physical GPU.
-gpu_uuid="GPU-2b8f760b-8426-6048-d6a7-ea84765c5802"  # Local GPU 0
-# gpu_uuid="GPU-eb6d2cfb-d887-6805-74e8-fa2e37a7e02f"  # Local GPU 1
+# 5. GPU roles: edit these two physical indices to swap the local GPUs.
+# Indices match nvidia-smi, regardless of CUDA_VISIBLE_DEVICES. UUIDs and the
+# local simulator worker are filled automatically; no runner JSON edits needed.
+inference_gpu=0
+simulator_gpu=1
+# inference_gpu=0; simulator_gpu=1  # Alternative: GPU 0 inference, GPU 1 simulation
+# CLI: --inference-gpu 0 --simulator-gpu 1
+# Environment: QWEN_INFERENCE_GPU / QWEN_SIMULATOR_GPU.
+# --gpu-uuid / QWEN_GPU_UUID remain available for explicit inference UUIDs.
 
-# 6. Local runner: ZJU3DV-V02, local simulator Python/assets/cache and GPU 1.
+# 6. Local runner: ZJU3DV-V02, local simulator Python/assets and NAS cache.
 # The original 100-task manifest is copied under operations/qwen_local_runtime/;
 # the template uses one shared local lock directory for all new local runs.
+# Simulator VRAM admission is temporarily disabled in behavior_local.json;
+# set simulator_gpu_memory_admission=true there to restore the 14 GiB gate.
 runner_template="$repo_root/configs/inference/behavior_local.json"
 # Remote alternatives require matching --worker IDs and the original SSH access.
 # runner_template="/mnt/nas/home--xujingyi/agentic_mobile_manip/operations/executor_full100_restart_20261025/batch/config.json"
@@ -51,9 +57,10 @@ runner_template="$repo_root/configs/inference/behavior_local.json"
 manifest=""
 # manifest="/mnt/nas/home--xujingyi/agentic_mobile_manip/operations/executor_full100_restart_20261025/batch/manifest.json"
 
-# 7. Simulator workers: the default template contains only local-gpu1.
-# Select a matching remote runner_template before enabling a remote alternative.
-worker_ids=("local-gpu1")  # This machine, physical GPU 1
+# 7. Simulator workers: leave empty to follow simulator_gpu with the local runner.
+# For other runner templates, empty selects all template workers; set worker IDs
+# or pass --worker to select existing lanes instead of using simulator_gpu.
+worker_ids=()
 # worker_ids=("s134-gpu1")  # 134: xujingyi@10.130.136.134, GPU 1
 # worker_ids=("s134-gpu4")  # 134, GPU 4
 # worker_ids=("s115-gpu0")  # 115: xujingyi@10.130.140.115, GPU 0
@@ -92,10 +99,15 @@ resume=""
 controller_python="${BEHAVIOR_CONTROLLER_PYTHON:-$controller_python}"
 qwen_python="${QWEN_PYTHON:-$qwen_python}"
 model="${QWEN_MODEL:-$model}"
-gpu_uuid="${QWEN_GPU_UUID:-$gpu_uuid}"
+inference_gpu="${QWEN_INFERENCE_GPU:-$inference_gpu}"
+simulator_gpu="${QWEN_SIMULATOR_GPU:-$simulator_gpu}"
+gpu_uuid="${QWEN_GPU_UUID:-}"
+simulator_gpu_explicit=false
+if [[ -n "${QWEN_SIMULATOR_GPU:-}" ]]; then simulator_gpu_explicit=true; fi
 new_options=false
 selection_cli=""
 worker_cli_selected=false
+inference_cli=""
 
 usage() {
     cat <<'USAGE'
@@ -115,12 +127,18 @@ New run:
   --manifest FILE         Source task manifest (default: TEMPLATE.batch/manifest.json)
   --qwen-python PATH      Separate inference Python (or QWEN_PYTHON)
   --model DIR             Local Qwen3.5-4B base weights (or QWEN_MODEL)
-  --gpu-uuid UUID         Physical inference GPU UUID (or QWEN_GPU_UUID)
+  --inference-gpu N       Physical inference GPU index from nvidia-smi
+                          (or QWEN_INFERENCE_GPU; default: configured inference_gpu)
+  --simulator-gpu N       Physical simulator GPU index for the built-in local runner
+                          (or QWEN_SIMULATOR_GPU; default: configured simulator_gpu)
+  --gpu-uuid UUID         Explicit inference UUID instead of --inference-gpu
+                          (or QWEN_GPU_UUID; overrides configured inference_gpu)
   --lora DIR              Override configured PEFT checkpoint; empty lora= means base
   --output DIR            New run directory outside Git; default: configured output_root/
                           base-or-lora timestamp directory; must not already exist
   --task NAME             Select a task; repeat for multiple tasks
-  --worker ID             Override configured simulator lanes; repeat to select workers
+  --worker ID             Select existing template lanes instead of simulator_gpu;
+                          repeat to select workers; cannot combine with --simulator-gpu
   --all                   Select every task in the source manifest
   --limit N               Keep only the first N selected tasks, in manifest order
   --prepare-only          Write configs and print the launch command; do not launch
@@ -137,12 +155,18 @@ Common:
 Examples using the filled local configuration:
   scripts/run_qwen_behavior.sh --prepare-only
   scripts/run_qwen_behavior.sh
+  scripts/run_qwen_behavior.sh --inference-gpu 0 --simulator-gpu 1
+  scripts/run_qwen_behavior.sh --inference-gpu 1 --simulator-gpu 0 --prepare-only
   scripts/run_qwen_behavior.sh --all --limit 10
   # For LoRA, uncomment one lora= line at the top, or pass --lora DIR.
   # Resume using --resume /absolute/path/to/an/already-created/run.
 
+GPU indices are physical nvidia-smi indices, unaffected by CUDA_VISIBLE_DEVICES.
+Index selection queries nvidia-smi to record physical UUIDs, including in prepare-only.
+The local simulator worker ID, GPU index and UUID follow simulator_gpu automatically.
+Other runner templates retain their original workers; use --worker to select them.
 The controller host loads Qwen locally. CUDA inference and simulation must use
-different physical GPUs; simulator workers need expected_gpu_uuid in the template.
+different physical GPUs; other templates need expected_gpu_uuid for each worker.
 Execution requires a clean frozen checkout. Preparation alone permits local edits.
 Episodes remain unbounded; --limit selects tasks, never actions or model tokens.
 Execution and --resume print live task stages, model tool calls/results and
@@ -168,14 +192,20 @@ while (($#)); do
             [[ "$selection_cli" != tasks ]] || die "--all and --task are mutually exclusive"
             selection_cli=all; tasks=(); all_tasks=true; new_options=true; shift ;;
         --prepare-only) prepare_only=true; new_options=true; shift ;;
-        --runner-template|--manifest|--qwen-python|--model|--gpu-uuid|--lora|--output|--task|--worker|--limit|--resume|--controller-python)
+        --runner-template|--manifest|--qwen-python|--model|--inference-gpu|--simulator-gpu|--gpu-uuid|--lora|--output|--task|--worker|--limit|--resume|--controller-python)
             require_value "$@"
             case "$1" in
                 --runner-template) runner_template="$2"; new_options=true ;;
                 --manifest) manifest="$2"; new_options=true ;;
                 --qwen-python) qwen_python="$2"; new_options=true ;;
                 --model) model="$2"; new_options=true ;;
-                --gpu-uuid) gpu_uuid="$2"; new_options=true ;;
+                --inference-gpu)
+                    [[ "$inference_cli" != uuid ]] || die "--inference-gpu and --gpu-uuid are mutually exclusive"
+                    inference_cli=index; inference_gpu="$2"; gpu_uuid=""; new_options=true ;;
+                --simulator-gpu) simulator_gpu="$2"; simulator_gpu_explicit=true; new_options=true ;;
+                --gpu-uuid)
+                    [[ "$inference_cli" != index ]] || die "--inference-gpu and --gpu-uuid are mutually exclusive"
+                    inference_cli=uuid; gpu_uuid="$2"; new_options=true ;;
                 --lora) lora="$2"; new_options=true ;;
                 --output) output="$2"; new_options=true ;;
                 --task)
@@ -216,7 +246,7 @@ if [[ -z "$output" ]]; then
     output="$output_root/qwen_${weights_arm}_$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)_$$"
 fi
 [[ -n "$runner_template" ]] || die "A new run requires a runner template in the configuration block or --runner-template"
-[[ -n "$qwen_python" && -n "$model" && -n "$gpu_uuid" ]] || die "Specify --qwen-python, --model and --gpu-uuid (or the QWEN_* environment variables)"
+[[ -n "$qwen_python" && -n "$model" ]] || die "Specify --qwen-python and --model (or the QWEN_* environment variables)"
 [[ -z "$limit" || "$limit" =~ ^[1-9][0-9]*$ ]] || die "--limit must be a positive task count"
 if $all_tasks && ((${#tasks[@]})); then die "--all and --task are mutually exclusive"; fi
 if ! $prepare_only; then require_frozen_source; fi
@@ -226,7 +256,8 @@ output="$("$controller_python" -c 'import os,sys; print(os.path.abspath(os.path.
 # Paths and strings travel as argv, never as executable shell or Python source.
 # This step only reads input definitions and writes fresh run configuration.
 "$controller_python" - "$repo_root" "$runner_template" "$manifest" "$output" \
-    "$qwen_python" "$model" "$gpu_uuid" "$lora" "$all_tasks" "$limit" \
+    "$qwen_python" "$model" "$gpu_uuid" "$inference_gpu" "$simulator_gpu" "$simulator_gpu_explicit" \
+    "$lora" "$all_tasks" "$limit" \
     "${tasks[@]}" -- "${worker_ids[@]}" <<'PY'
 import copy
 from datetime import datetime
@@ -243,12 +274,48 @@ from zoneinfo import ZoneInfo
 
 def main():
     (repo_arg, template_arg, manifest_arg, output_arg, python_arg, model_arg,
-     gpu_uuid, lora_arg, all_arg, limit_arg, *selection) = sys.argv[1:]
+     gpu_uuid, inference_gpu_arg, simulator_gpu_arg, simulator_gpu_explicit,
+     lora_arg, all_arg, limit_arg, *selection) = sys.argv[1:]
     separator = selection.index('--')
     names, worker_ids = selection[:separator], set(selection[separator + 1:])
     repo = Path(repo_arg).resolve()
     template_path = Path(template_arg).expanduser().resolve(strict=True)
     config = json.loads(template_path.read_text())
+    local_template = template_path == (repo / 'configs/inference/behavior_local.json').resolve()
+    if simulator_gpu_explicit == 'true':
+        if worker_ids:
+            raise ValueError('--simulator-gpu / QWEN_SIMULATOR_GPU cannot combine with --worker or configured worker_ids')
+        if not local_template:
+            raise ValueError('--simulator-gpu / QWEN_SIMULATOR_GPU requires the built-in local runner; use --worker for other templates')
+
+    def gpu_index(value, option):
+        if not re.fullmatch(r'0|[1-9][0-9]*', value):
+            raise ValueError(option + ' must be a non-negative physical GPU index from nvidia-smi')
+        return int(value)
+
+    inference_index = gpu_index(inference_gpu_arg, '--inference-gpu') if not gpu_uuid else None
+    simulator_index = (gpu_index(simulator_gpu_arg, '--simulator-gpu')
+                       if local_template and not worker_ids else None)
+    gpu_uuids = {}
+    if inference_index is not None or simulator_index is not None:
+        query = subprocess.run(['nvidia-smi', '--query-gpu=index,uuid', '--format=csv,noheader,nounits'],
+                               capture_output=True, text=True, timeout=15, check=False)
+        if query.returncode:
+            raise ValueError('Cannot resolve GPU indices: ' + (query.stderr or query.stdout).strip())
+        for line in query.stdout.splitlines():
+            fields = [field.strip() for field in line.split(',')]
+            if len(fields) != 2 or not fields[0].isdigit() or not re.fullmatch(r'GPU-[0-9a-fA-F-]+', fields[1]):
+                raise ValueError('Unexpected nvidia-smi GPU index/UUID output')
+            gpu_uuids[int(fields[0])] = fields[1]
+        for index in (inference_index, simulator_index):
+            if index is not None and index not in gpu_uuids:
+                raise ValueError(f'Physical GPU {index} absent from nvidia-smi; available indices: {sorted(gpu_uuids)}')
+    if inference_index is not None:
+        gpu_uuid = gpu_uuids[inference_index]
+    if not re.fullmatch(r'GPU-[0-9a-fA-F-]+', gpu_uuid):
+        raise ValueError('--gpu-uuid must be a physical NVIDIA GPU UUID')
+    if simulator_index is not None and gpu_uuids[simulator_index].lower() == gpu_uuid.lower():
+        raise ValueError('Simulator and inference GPUs must be distinct; choose different --inference-gpu and --simulator-gpu indices')
     source_batch = Path(config['batch']).expanduser()
     if not source_batch.is_absolute():
         raise ValueError('Template batch must be an absolute path, as used by the original supervisor')
@@ -269,8 +336,6 @@ def main():
         raise ValueError('Model and optional LoRA paths must be directories')
     if lora is not None and not (lora / 'adapter_config.json').is_file():
         raise ValueError('--lora must name the exact PEFT checkpoint containing adapter_config.json')
-    if not re.fullmatch(r'GPU-[0-9a-fA-F-]+', gpu_uuid):
-        raise ValueError('--gpu-uuid must be a physical NVIDIA GPU UUID')
     for protected in (repo, model, lora, source_batch.resolve()):
         if protected is not None and (output == protected or protected in output.parents):
             raise ValueError('Output must be outside Git, weights and the source batch')
@@ -350,6 +415,12 @@ def main():
     workers = config.get('workers')
     if workers is None:
         workers = [{'id': f'gpu{gpu}', 'gpu': gpu} for gpu in config['gpus']]
+    if simulator_index is not None:
+        if len(workers) != 1:
+            raise ValueError('Local GPU role selection requires exactly one simulator worker in the template')
+        workers = [dict(workers[0], id=f'local-gpu{simulator_index}', gpu=simulator_index,
+                        expected_gpu_uuid=gpu_uuids[simulator_index])]
+        config['workers'] = workers
     if worker_ids:
         missing = worker_ids - {worker['id'] for worker in workers}
         if missing:
@@ -362,8 +433,8 @@ def main():
         simulator_uuid = worker.get('expected_gpu_uuid', config.get('expected_gpu_uuid'))
         if not simulator_uuid:
             raise ValueError('Each simulator worker needs its original expected_gpu_uuid')
-        if simulator_uuid == gpu_uuid:
-            raise ValueError('Simulator and inference GPUs must be distinct; select other lanes with --worker')
+        if simulator_uuid.lower() == gpu_uuid.lower():
+            raise ValueError('Simulator and inference GPUs must be distinct; select another --simulator-gpu or --worker')
     lease_dir = Path(config['shared_lease_dir'])
     if not lease_dir.is_absolute():
         raise ValueError('Template shared_lease_dir must be absolute')
@@ -385,6 +456,10 @@ def main():
         'source_manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
         'weights_arm': arm, 'model': str(model), 'adapter': str(lora) if lora else None,
         'inference_python': str(python), 'inference_gpu_uuid': gpu_uuid,
+        'inference_gpu_index': inference_index,
+        'simulator_workers': [{'id': worker['id'], 'gpu': worker.get('gpu'),
+                               'gpu_uuid': worker.get('expected_gpu_uuid', config.get('expected_gpu_uuid'))}
+                              for worker in workers],
         'validation_level': 'configuration_only_no_execution',
         'task_origins': [{'index': row['index'], 'task': row['task'],
                           'source_run_id': row.get('run_id')} for row in rows],
@@ -403,13 +478,17 @@ def main():
         stream.write(''.join(f'{key} = {json.dumps(value, ensure_ascii=False)}\n'
                              for key, value in qwen.items()))
     print(f'Prepared {len(selected)} task(s), weights={arm}: {output}')
+    label = f'GPU {inference_index}' if inference_index is not None else 'explicit UUID'
+    print(f'  Inference: {label} ({gpu_uuid})')
+    for worker in provenance['simulator_workers']:
+        print(f'  Simulator: {worker["id"]}, GPU {worker["gpu"]} ({worker["gpu_uuid"]})')
     for row in selected:
         print(f'  {row["task"]} / instance {row["instance"]} / seed {row["seed"]}')
 
 
 try:
     main()
-except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as exc:
+except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
     sys.exit('Error preparing Qwen run: ' + str(exc))
 PY
 

@@ -51,12 +51,20 @@ checkpoint 的训练 marker 不覆盖在线配置。
 2026-11-07 已在脚本开头的“本机配置区”填写当前机器的实际路径，每组第一项启用，
 备选项注释保留。切换时先注释当前赋值，再取消所选备选项的注释：
 
-- 基座为本机固定 `851bf6e...` 快照；`lora=""` 默认仅使用基座。
+- 基座为本机固定 `851bf6e...` 快照；脚本当前显式选择 `checkpoint-1122`，改为 `lora=""` 使用基座。
 - LoRA 备选为已有 `checkpoint-1122`、`checkpoint-1120`、`checkpoint-720`，仅显式选择一个。
 - 控制器使用项目 `.venv`；推理使用已有 `/tmp/mas-qwen-native-20261107-7_fq5k15/env/bin/python`。
   该临时环境可能被清理；原训练环境缺 MCP，不能直接替代它。
-- runner 默认 `configs/inference/behavior_local.json`：本机 GPU 0 推理、本机 GPU 1 仿真，
-  worker 为 `local-gpu1`，默认仅 radio；两张卡分别通过物理 UUID 校验。
+- GPU 分工只需修改脚本配置区的 `inference_gpu=0` 和 `simulator_gpu=1`，
+  或传入 `--inference-gpu N --simulator-gpu N`；编号对应 `nvidia-smi` 中的物理 GPU，
+  不受 `CUDA_VISIBLE_DEVICES` 重编号影响。也支持 `QWEN_INFERENCE_GPU`、`QWEN_SIMULATOR_GPU` 环境变量。
+  新运行会查询实际 UUID，并同步生成 `runner.json` 中的 `local-gpuN`、`gpu` 和
+  `expected_gpu_uuid`，无需修改模板 JSON；推理与仿真选到同一张物理卡时拒绝启动。
+  `--prepare-only` 也会查询 `nvidia-smi`，但不加载权重或启动仿真。
+- runner 默认 `configs/inference/behavior_local.json`：启动脚本默认本机 GPU 0 推理、本机 GPU 1 仿真，
+  worker 随仿真卡自动选择，默认仅 radio；两张卡分别通过物理 UUID 校验。
+  启动器按 worker 的 `gpu` 传入 `GAP_BEHAVIOR_GPU_ID`；继续复用现有 `gpu1` 缓存和临时目录，
+  目录名称不决定实际设备。已有运行的设备配置保持原记录，交换后的默认配置用于新运行。
 - 本机传输通过 `local_worker_transport.py --env ... local-v02` 直接执行命令，
   预检、MCP 和 systemd 仿真均使用本机模拟器环境，不经过 SSH。
   `behavior_local_env.sh` 沿用已有 runtime、资产及只读上游包，不修改原环境。
@@ -64,26 +72,54 @@ checkpoint 的训练 marker 不覆盖在线配置。
   来源和哈希记录在同目录的 `local_setup.json`。静态资产检查所需的
   `operations/runtime_local/src/BEHAVIOR-1K` 指向已有只读源码。
 - 输出默认在 `/home/liqi/agentic_mobile_manipulation_runs/qwen_behavior/` 下创建独立时间戳目录。
-  仿真输出和缓存使用本机 NVMe 上的 `operations/runtime_local/`，
-  共享锁使用 `operations/resource_leases_local/`。保留 14 GiB 仿真显存门槛和原有资源等待。
+  仿真输出和临时目录使用本机 NVMe 上的 `operations/runtime_local/`，缓存自 2026-11-09 起写入
+  `/mnt/nas/home--liqi/simulator_cache/`，包括 OmniGibson appdata、XDG、CUDA 和 Torch extensions。
+  环境文件与 runner 模板使用相同的 NAS 路径；原缓存保留备份，旧缓存路径及
+  `operations/runtime_local/cache` 指向新位置，已有运行的 runner 配置保持原记录。
+  缓存与临时目录均保留原有 16 GiB 可用空间启动检查，
+  共享锁使用 `operations/resource_leases_local/`。
+- 2026-11-08 按用户要求临时关闭本机仿真显存容量准入：
+  `simulator_gpu_memory_admission=false`。调度预检、GPU 候选筛选及仿真进程内预检
+  均跳过显存容量判断，记录中的 `gpu_policy.memory_admission_enabled=false` 标明该状态。
+  GPU 存在性、UUID 校验、资源锁、驱动、主机内存、磁盘及 Qwen 推理显存检查继续生效。
+  `minimum_free_gpu_mib=14336` 保留，恢复时把开关设为 `true`；
+  未配置开关的其他模板沿用原策略。已创建运行的配置和停止状态不改写。
 
 ```bash
 # 先只生成配置；不加载权重、不启动任务。
 scripts/run_qwen_behavior.sh --prepare-only
 
-# 正式执行当前注释选定的配置；沿用原有干净冻结源码检查和资源准入。
+# 正式执行脚本配置区的当前配置；沿用原有干净冻结源码检查和资源准入。
 scripts/run_qwen_behavior.sh
 
+# GPU 0 推理，GPU 1 仿真；反向分配时交换这两个编号即可。
+scripts/run_qwen_behavior.sh --inference-gpu 0 --simulator-gpu 1
+
+# GPU 1 推理，GPU 0 仿真；只生成配置并核对启动摘要。
+scripts/run_qwen_behavior.sh --inference-gpu 1 --simulator-gpu 0 --prepare-only
+
 # CLI 可覆盖配置区的任务和 worker；首次 --worker 会替换默认 worker，而不是追加。
-scripts/run_qwen_behavior.sh --all --limit 10 --worker local-gpu1
+scripts/run_qwen_behavior.sh --all --limit 10 --worker local-gpu0
 ```
 
-远程 runner 作为注释备选保留；切换时须同时选择该模板内的 worker。
+执行和 `--resume` 默认在终端用英文实时显示批次进度、当前任务序号/名称、instance、seed、
+任务指令、worker、初始化阶段、模型加载状态、推理轮次和 token 数，以及每次 MCP
+工具调用的动作参数、返回状态、错误和 act/look 请求计数。每秒读取一次已有的本地
+模型事件；等待初始化、资源或推理时每 30 秒输出一次状态。任务结束后分别显示独立
+评估结果与 Q 分、finish 确认、控制器状态、录像验证及记录路径，工具成功或 finish
+确认不会代替官方任务成功。完整事件和图像仍保存在原日志中；终端只显示摘要。
+直接调用 `scripts/run_behavior100.py` 时可用 `--console-progress` 启用相同显示。
+
+`simulator_gpu` 的自动改配仅用于内置本机 runner；`--worker` 则选择模板已有的 worker，
+不能与显式 `--simulator-gpu` 或 `QWEN_SIMULATOR_GPU` 合用。`--resume` 保留已生成的设备配置。
+`--gpu-uuid` / `QWEN_GPU_UUID` 仍可直接指定推理卡，覆盖配置区的 `inference_gpu`；
+显式 `--inference-gpu` 会覆盖环境中的 UUID，但不能与 CLI `--gpu-uuid` 同时使用。
+远程 runner 作为注释备选保留；切换时可选择该模板内的 worker，省略 worker 时使用模板全部 worker。
 新运行不继承另一控制器的 Codex API 环境要求、控制器 PATH 或本地 spool 路径，
 使用当前控制器环境及监督器原有的本地默认 spool。下面保留显式 CLI 覆盖方式供换站点时使用。
 
 将下面的路径和 GPU UUID 替换为实际值。`--worker` 是原模板中的仿真 worker ID，
-可以重复指定；省略时使用脚本配置区的 worker。每个选中 worker 都必须提供原有的
+可以重复指定；省略时使用脚本配置区的 worker（空数组表示模板全部 worker）。每个选中 worker 都必须提供原有的
 `expected_gpu_uuid`，且与 Qwen 推理 GPU 不同。模型环境须安装本页所列推理依赖。
 
 ```bash
@@ -140,18 +176,6 @@ scripts/run_qwen_behavior.sh \
 该状态，正式执行仍由监督器核对并记录实际冻结源码。
 `--resume` 只接受原运行目录和控制器 Python，不重新选择权重、任务或重试已失败任务。
 中断后的接管和收尾仍由原监督器按进程归属执行。
-
-`simulator_gpu_memory_admission` 控制仿真显存容量准入，未配置时默认为 `true`。
-设为 `false` 会跳过调度预检、GPU 候选筛选和进程内显存容量判断；
-GPU 存在性、UUID、资源锁及其他资源检查继续生效，原显存门槛保留供恢复。
-
-执行和 `--resume` 默认在终端用英文实时显示批次进度、当前任务序号/名称、instance、seed、
-任务指令、worker、初始化阶段、模型加载状态、推理轮次和 token 数，以及每次 MCP
-工具调用的动作参数、返回状态、错误和 act/look 请求计数。每秒读取一次已有的本地
-模型事件；等待初始化、资源或推理时每 30 秒输出一次状态。任务结束后分别显示独立
-评估结果与 Q 分、finish 确认、控制器状态、录像验证及记录路径，工具成功或 finish
-确认不会代替官方任务成功。完整事件和图像仍保存在原日志中；终端只显示摘要。
-直接调用 `scripts/run_behavior100.py` 时可用 `--console-progress` 启用相同显示。
 
 ## 启动原有 episode 和本地控制器
 

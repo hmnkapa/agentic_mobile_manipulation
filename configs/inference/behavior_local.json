@@ -14,12 +14,13 @@
   "base_port": 60400,
   "workers": [
     {
-      "id": "local-gpu1",
-      "gpu": 1,
-      "expected_gpu_uuid": "GPU-eb6d2cfb-d887-6805-74e8-fa2e37a7e02f"
+      "id": "local-gpu0",
+      "gpu": 0,
+      "expected_gpu_uuid": "GPU-2b8f760b-8426-6048-d6a7-ea84765c5802"
     }
   ],
   "minimum_free_gpu_mib": 14336,
+  "simulator_gpu_memory_admission": false,
   "memory_budget_gib": 28,
   "simulator_memory_max": "28G",
   "startup_memory_gib": 12,
@@ -29,7 +30,7 @@
   "host_slot_memory_gib": 28,
   "host_worker_memory_budget_gib": {"local-v02": null},
   "shared_lease_dir": "/home/liqi/agentic_mobile_manipulation/operations/resource_leases_local",
-  "simulator_appdata_path": "/home/liqi/agentic_mobile_manipulation/operations/runtime_local/cache/behavior100/gpu1",
+  "simulator_appdata_path": "/mnt/nas/home--liqi/simulator_cache/behavior100/gpu1",
   "simulator_tmpdir": "/home/liqi/agentic_mobile_manipulation/operations/runtime_local/tmp/behavior100/gpu1",
   "simulator_env": {
     "MAS_VIDEO_RENDER_STRIDE": "1",
