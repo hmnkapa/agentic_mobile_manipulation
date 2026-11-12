@@ -25,6 +25,45 @@ def native_model_path(request):
 
 
 @pytest.mark.qwen_encode
+@pytest.mark.parametrize('budget', [256, 64])
+def test_online_image_token_budget_with_real_processor(request, tmp_path, budget):
+    model = native_model_path(request)
+    from transformers import AutoProcessor
+    from PIL import Image
+    backend = NativeGenerationBackend.__new__(NativeGenerationBackend)
+    backend.processor = AutoProcessor.from_pretrained(model, local_files_only=True)
+    backend.image_max_token_num = budget
+    backend.model_max_length = json.loads((Path(model) / 'config.json').read_text())['text_config']['max_position_embeddings']
+    settings = deepcopy(backend.processor.image_processor.to_dict())
+    content, hashes = [], []
+    for index, view in enumerate(('front', 'back', 'left', 'right')):
+        path = tmp_path / (view + '.png')
+        Image.new('RGB', (512, 512), (index * 50, 100, 150)).save(path)
+        hashes.append(hashlib.sha256(path.read_bytes()).hexdigest())
+        content.extend([{'type': 'text', 'text': 'RGB view=' + view + ', image_ref=current-' + view},
+                        {'type': 'image', 'image': str(path)}])
+    messages = [{'role': 'user', 'content': content}]
+    original = deepcopy(messages)
+    batch = backend.encode(messages, [])
+    grids = batch['image_grid_thw'].tolist()
+    merge = backend.processor.image_processor.merge_size
+    counts = [t * h * w // merge ** 2 for t, h, w in grids]
+    assert counts == [budget] * 4
+    image_token = backend.processor.tokenizer.convert_tokens_to_ids('<|image_pad|>')
+    assert int((batch['input_ids'] == image_token).sum()) == 4 * budget
+    assert messages == original and backend.processor.image_processor.to_dict() == settings
+    assert [hashlib.sha256((tmp_path / (view + '.png')).read_bytes()).hexdigest()
+            for view in ('front', 'back', 'left', 'right')] == hashes
+    decoded = backend.processor.tokenizer.decode(batch['input_ids'][0].tolist(), skip_special_tokens=False)
+    assert all('current-' + view in decoded for view in ('front', 'back', 'left', 'right'))
+    (tmp_path / 'image_token_encoding.json').write_text(json.dumps({
+        'status': 'passed', 'validation_level': 'real_processor_only_no_model_weights',
+        'task_success_evaluated': False, 'image_max_token_num': budget,
+        'image_grid_thw': grids, 'visual_tokens_per_image': counts, 'rgb_sha256': hashes,
+    }, indent=2) + '\n')
+
+
+@pytest.mark.qwen_encode
 def test_native_processor_full_images_history_and_generation_prefix(request,tmp_path):
     model=native_model_path(request)
     from transformers import AutoProcessor

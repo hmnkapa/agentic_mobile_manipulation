@@ -215,13 +215,30 @@ def test_original_rgb_and_public_errors_are_preserved(tmp_path):
 def test_config_cannot_smuggle_training_or_task_policy(tmp_path):
     path=runtime_config(tmp_path)
     assert load_config(path)['python']==os.path.abspath(sys.executable)
-    for setting in ('image_max_token_num=64','max_length=17408','max_new_tokens=2048',
+    for setting in ('max_length=17408','max_new_tokens=2048',
                     'history_compression="compact"','recipe="training.toml"'):
         original=path.read_text();path.write_text(original+setting+'\n')
         with pytest.raises(ValueError):load_config(path)
         path.write_text(original)
     with pytest.raises(ValueError):
         ClientConfig('qwen','model','task','python',[],tmp_path,qwen_config=path)
+
+
+@pytest.mark.parametrize('adapter', [False, True])
+@pytest.mark.parametrize('budget', [None, 256, 64])
+def test_online_image_token_config_is_explicit_and_legacy_config_stays_native(tmp_path, adapter, budget):
+    path = runtime_config(tmp_path, adapter=adapter)
+    if budget is not None:
+        path.write_text(path.read_text() + f'image_max_token_num={budget}\n')
+    assert load_config(path)['image_max_token_num'] == budget
+
+
+@pytest.mark.parametrize('value', ['0', '128', 'true', '64.0', '"64"', '[64]'])
+def test_invalid_online_image_token_config_is_rejected(tmp_path, value):
+    path = runtime_config(tmp_path)
+    path.write_text(path.read_text() + 'image_max_token_num=' + value + '\n')
+    with pytest.raises(ValueError, match='image_max_token_num must be 256 or 64'):
+        load_config(path)
 
 
 def test_gpu_environment_location_is_resolved_without_changing_visibility(tmp_path,monkeypatch):

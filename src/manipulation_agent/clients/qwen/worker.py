@@ -168,7 +168,8 @@ def main():
         state.update(status='loading_model', base=base, adapter=adapter)
         write_json(output / 'qwen_runtime.json', state)
         from ...training.rollout_backend import NativeGenerationBackend
-        backend = NativeGenerationBackend(runtime['model'], runtime['adapter'], runtime['device'])
+        backend = NativeGenerationBackend(runtime['model'], runtime['adapter'], runtime['device'],
+                                          image_max_token_num=runtime.get('image_max_token_num'))
         state.update(status='model_ready', model_ready_at=now(), backend=backend.describe())
         write_json(output / 'qwen_runtime.json', state)
         asyncio.run(run(request, output, backend))

@@ -10,6 +10,12 @@
 改为原生 `act.target.point=[x,y]`、范围 `[0,1]`；例如 `[250,750]` → `[0.25,0.75]`。
 `image_ref`、revision 和其他参数保持原值，release/wait 继续使用 `target=null`。
 不继承训练图片预算或历史压缩。
+新运行通过 `--image-max-token-num 256|64` 显式选择每张图片的视觉 token 上限，默认 256；
+也可设置脚本配置区的 `image_max_token_num` 或环境变量 `QWEN_IMAGE_MAX_TOKEN_NUM`，CLI 优先。
+当前四张 512×512 RGB 分别编码为每张 256 或 64 个视觉 token，四张合计为 1024 或 256，
+不包括图片边界标记和文本 token。该设置只控制 processor 的缩放像素预算，原始图片和完整历史仍保留。
+选择写入新运行的 `qwen.toml` 和 `launch.json`，并由客户端传入在线编码器；
+`--resume` 保留原配置，未设置该字段的旧配置继续使用基座 processor 原值。
 模型的 tokenizer、原生 chat template、视觉 processor 和上下文容量属于模型属性；
 Codex CLI 内部提示和上下文管理不宣称与本地模型逐 token 相同。
 
@@ -88,6 +94,9 @@ checkpoint 的训练 marker 不覆盖在线配置。
 ```bash
 # 先只生成配置；不加载权重、不启动任务。
 scripts/run_qwen_behavior.sh --prepare-only
+
+# 选择每张图片 64 个视觉 token；省略参数默认每张 256。
+scripts/run_qwen_behavior.sh --image-max-token-num 64 --prepare-only
 
 # 正式执行脚本配置区的当前配置；沿用原有干净冻结源码检查和资源准入。
 scripts/run_qwen_behavior.sh

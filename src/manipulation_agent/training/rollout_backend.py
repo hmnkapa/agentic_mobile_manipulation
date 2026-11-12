@@ -179,16 +179,30 @@ class GenerationBackend:
         self.recover()
 
 
+def native_image_resize_options(processor, image_max_token_num):
+    """Map an explicit per-image token cap to the base processor's pixel units."""
+    if image_max_token_num is None:
+        return {}
+    if type(image_max_token_num) is not int or image_max_token_num not in (256, 64):
+        raise ValueError('image_max_token_num must be 256 or 64')
+    image_processor = processor.image_processor
+    pixels = image_max_token_num * (image_processor.patch_size * image_processor.merge_size) ** 2
+    size = image_processor.size
+    minimum = size['shortest_edge'] if isinstance(size, dict) else size.shortest_edge
+    return {'size': {'shortest_edge': min(minimum, pixels), 'longest_edge': pixels}}
+
+
 class NativeGenerationBackend(GenerationBackend):
     """Online model-native encoding; none of the offline training policy applies.
 
     Device transfer, CPU reference kernels and memory cleanup are shared with
     the offline backend. Processor and generation settings always come from the
-    base model, including when PEFT weights are attached.
+    base model, including when PEFT weights are attached. An explicit online
+    image token cap overrides only the processor's resize bounds.
     """
     validation_level = 'real_native_model_generation'
 
-    def __init__(self, model_path, adapter_path, device):
+    def __init__(self, model_path, adapter_path, device, *, image_max_token_num=None):
         import torch
         from transformers import AutoProcessor, Qwen3_5ForConditionalGeneration
 
@@ -206,6 +220,8 @@ class NativeGenerationBackend(GenerationBackend):
                 raise TrainingError('insufficient_gpu_memory', 'Free GPU memory is smaller than the base weights',
                                     free_bytes=free, required_free_bytes=weights)
         self.processor = AutoProcessor.from_pretrained(model_path, local_files_only=True)
+        self.image_max_token_num = image_max_token_num
+        native_image_resize_options(self.processor, image_max_token_num)
         model = Qwen3_5ForConditionalGeneration.from_pretrained(
             model_path, local_files_only=True, dtype=self.dtype,
             device_map=str(self.device), attn_implementation='sdpa')
@@ -227,7 +243,9 @@ class NativeGenerationBackend(GenerationBackend):
         # image window or training-recipe vision settings enter this path.
         batch = self.processor.apply_chat_template(
             deepcopy(messages), tools=deepcopy(tools), add_generation_prompt=True,
-            tokenize=True, return_dict=True, return_tensors='pt', truncation=False)
+            tokenize=True, return_dict=True, return_tensors='pt',
+            processor_kwargs={'truncation': False, 'images_kwargs': native_image_resize_options(
+                self.processor, getattr(self, 'image_max_token_num', None))})
         length = int(batch['input_ids'].shape[1])
         if length >= self.model_max_length:
             raise TrainingError('context_exhausted', 'Complete public history exceeds the native model context',
@@ -239,6 +257,8 @@ class NativeGenerationBackend(GenerationBackend):
                 'model_max_length': self.model_max_length, 'thinking': 'native_chat_template_default',
                 'generation_config': self.generation_config.to_dict(),
                 'processor_image_settings': self.processor.image_processor.to_dict(),
+                'image_max_token_num': self.image_max_token_num,
+                'processor_image_overrides': native_image_resize_options(self.processor, self.image_max_token_num),
                 'input_policy': 'all_public_history_original_rgb_native_mcp',
                 'training_contract_applied': False, 'episode_limits': None}
 

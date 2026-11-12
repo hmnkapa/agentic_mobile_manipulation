@@ -105,6 +105,44 @@ def test_default_roles_keep_gpu0_inference_gpu1_simulation(launcher):
     assert json.loads((output / 'runner.json').read_text())['workers'][0]['gpu'] == 1
 
 
+@pytest.mark.parametrize(('args', 'env', 'expected'), [
+    ([], {}, 256),
+    (['--image-max-token-num', '64'], {}, 64),
+    (['--image-max-token-num', '256'], {}, 256),
+    ([], {'QWEN_IMAGE_MAX_TOKEN_NUM': '64'}, 64),
+    (['--image-max-token-num', '256'], {'QWEN_IMAGE_MAX_TOKEN_NUM': '64'}, 256),
+])
+def test_image_token_selection_is_recorded_in_new_run(launcher, args, env, expected):
+    run, output, _, _ = launcher
+    result = run(*args, overrides=env)
+    assert result.returncode == 0, result.stderr
+    assert tomllib.loads((output / 'qwen.toml').read_text())['image_max_token_num'] == expected
+    assert json.loads((output / 'launch.json').read_text())['image_max_token_num'] == expected
+    assert f'{expected} visual tokens per image' in result.stdout
+
+
+@pytest.mark.parametrize('value', ['0', '128', '064', '64.0', 'true', 'arbitrary'])
+def test_invalid_image_token_selection_creates_no_run(launcher, value):
+    run, output, _, query_log = launcher
+    result = run('--image-max-token-num', value)
+    assert result.returncode != 0
+    assert 'must be 256 or 64' in result.stderr
+    assert not output.exists() and not query_log.exists()
+
+
+def test_resume_cannot_override_image_token_selection(launcher, tmp_path):
+    run, output, _, _ = launcher
+    existing = tmp_path / 'existing-run'
+    existing.mkdir()
+    config = existing / 'qwen.toml'
+    config.write_text('image_max_token_num = 256\n')
+    before = config.read_bytes()
+    result = run('--resume', str(existing), '--image-max-token-num', '64')
+    assert result.returncode != 0
+    assert 'existing run settings are retained' in result.stderr
+    assert config.read_bytes() == before and not output.exists()
+
+
 @pytest.mark.parametrize('cli_override', [False, True])
 def test_environment_roles_and_cli_override_of_environment_uuid(launcher, cli_override):
     run, output, _, _ = launcher

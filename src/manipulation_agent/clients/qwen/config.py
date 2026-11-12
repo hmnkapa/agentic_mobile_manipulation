@@ -1,4 +1,4 @@
-"""Local model locations only; task and prompt policy belong to the harness."""
+"""Local model and image encoding settings; task policy belongs to the harness."""
 from pathlib import Path
 import os
 import re
@@ -8,9 +8,12 @@ import tomllib
 def load_config(path):
     path = Path(path).resolve()
     data = tomllib.loads(path.read_text())
-    allowed = {'python', 'model', 'adapter', 'device', 'gpu_uuid'}
+    allowed = {'python', 'model', 'adapter', 'device', 'gpu_uuid', 'image_max_token_num'}
     if set(data) - allowed or not {'python', 'model'} <= data.keys():
-        raise ValueError('Qwen config accepts python, model, optional adapter, device and gpu_uuid only')
+        raise ValueError('Qwen config accepts python, model, optional adapter, device, gpu_uuid and image_max_token_num only')
+    image_max_token_num = data.get('image_max_token_num')
+    if 'image_max_token_num' in data and (type(image_max_token_num) is not int or image_max_token_num not in (256, 64)):
+        raise ValueError('image_max_token_num must be 256 or 64')
     result = {}
     for key in ('python', 'model', 'adapter'):
         value = data.get(key)
@@ -39,5 +42,6 @@ def load_config(path):
         raise ValueError('CUDA inference requires gpu_uuid')
     if device == 'cpu' and uuid is not None:
         raise ValueError('CPU inference must not claim a GPU')
-    result.update(device=device, gpu_uuid=uuid)
+    # Omitted settings retain native encoding for existing run configurations.
+    result.update(device=device, gpu_uuid=uuid, image_max_token_num=image_max_token_num)
     return result

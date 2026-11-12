@@ -32,6 +32,11 @@ lora="/mnt/data/home/liqi/manipulation_sft/runs/qwen35_4b_5090_resume_20261106_0
 # lora="/mnt/data/home/liqi/manipulation_sft/runs/qwen35_4b_5090_resume_20261106_005600/swift/checkpoint-1120"
 # lora="/mnt/data/home/liqi/manipulation_sft/runs/qwen35_4b_5090_resume_20261106_005600/swift/checkpoint-720"
 
+# Per-image visual token cap for online inference; choose 256 or 64.
+# CLI: --image-max-token-num 64. Environment: QWEN_IMAGE_MAX_TOKEN_NUM.
+image_max_token_num=256
+# image_max_token_num=64
+
 # 5. GPU roles: edit these two physical indices to swap the local GPUs.
 # Indices match nvidia-smi, regardless of CUDA_VISIBLE_DEVICES. UUIDs and the
 # local simulator worker are filled automatically; no runner JSON edits needed.
@@ -99,6 +104,7 @@ resume=""
 controller_python="${BEHAVIOR_CONTROLLER_PYTHON:-$controller_python}"
 qwen_python="${QWEN_PYTHON:-$qwen_python}"
 model="${QWEN_MODEL:-$model}"
+image_max_token_num="${QWEN_IMAGE_MAX_TOKEN_NUM:-$image_max_token_num}"
 inference_gpu="${QWEN_INFERENCE_GPU:-$inference_gpu}"
 simulator_gpu="${QWEN_SIMULATOR_GPU:-$simulator_gpu}"
 gpu_uuid="${QWEN_GPU_UUID:-}"
@@ -134,6 +140,8 @@ New run:
   --gpu-uuid UUID         Explicit inference UUID instead of --inference-gpu
                           (or QWEN_GPU_UUID; overrides configured inference_gpu)
   --lora DIR              Override configured PEFT checkpoint; empty lora= means base
+  --image-max-token-num N  Per-image visual token cap: 256 (default) or 64
+                          (or QWEN_IMAGE_MAX_TOKEN_NUM; CLI overrides environment)
   --output DIR            New run directory outside Git; default: configured output_root/
                           base-or-lora timestamp directory; must not already exist
   --task NAME             Select a task; repeat for multiple tasks
@@ -155,6 +163,7 @@ Common:
 Examples using the filled local configuration:
   scripts/run_qwen_behavior.sh --prepare-only
   scripts/run_qwen_behavior.sh
+  scripts/run_qwen_behavior.sh --image-max-token-num 64
   scripts/run_qwen_behavior.sh --inference-gpu 0 --simulator-gpu 1
   scripts/run_qwen_behavior.sh --inference-gpu 1 --simulator-gpu 0 --prepare-only
   scripts/run_qwen_behavior.sh --all --limit 10
@@ -192,7 +201,7 @@ while (($#)); do
             [[ "$selection_cli" != tasks ]] || die "--all and --task are mutually exclusive"
             selection_cli=all; tasks=(); all_tasks=true; new_options=true; shift ;;
         --prepare-only) prepare_only=true; new_options=true; shift ;;
-        --runner-template|--manifest|--qwen-python|--model|--inference-gpu|--simulator-gpu|--gpu-uuid|--lora|--output|--task|--worker|--limit|--resume|--controller-python)
+        --runner-template|--manifest|--qwen-python|--model|--inference-gpu|--simulator-gpu|--gpu-uuid|--lora|--image-max-token-num|--output|--task|--worker|--limit|--resume|--controller-python)
             require_value "$@"
             case "$1" in
                 --runner-template) runner_template="$2"; new_options=true ;;
@@ -207,6 +216,7 @@ while (($#)); do
                     [[ "$inference_cli" != index ]] || die "--inference-gpu and --gpu-uuid are mutually exclusive"
                     inference_cli=uuid; gpu_uuid="$2"; new_options=true ;;
                 --lora) lora="$2"; new_options=true ;;
+                --image-max-token-num) image_max_token_num="$2"; new_options=true ;;
                 --output) output="$2"; new_options=true ;;
                 --task)
                     [[ "$selection_cli" != all ]] || die "--all and --task are mutually exclusive"
@@ -223,6 +233,8 @@ while (($#)); do
         *) die "Unknown option: $1 (see --help)" ;;
     esac
 done
+
+[[ "$image_max_token_num" == 256 || "$image_max_token_num" == 64 ]] || die "--image-max-token-num / QWEN_IMAGE_MAX_TOKEN_NUM must be 256 or 64"
 
 controller_python="$(command -v -- "$controller_python")" || die "Controller Python not found; use --controller-python"
 if [[ "$controller_python" != /* ]]; then controller_python="$PWD/$controller_python"; fi
@@ -257,7 +269,7 @@ output="$("$controller_python" -c 'import os,sys; print(os.path.abspath(os.path.
 # This step only reads input definitions and writes fresh run configuration.
 "$controller_python" - "$repo_root" "$runner_template" "$manifest" "$output" \
     "$qwen_python" "$model" "$gpu_uuid" "$inference_gpu" "$simulator_gpu" "$simulator_gpu_explicit" \
-    "$lora" "$all_tasks" "$limit" \
+    "$lora" "$all_tasks" "$limit" "$image_max_token_num" \
     "${tasks[@]}" -- "${worker_ids[@]}" <<'PY'
 import copy
 from datetime import datetime
@@ -275,7 +287,8 @@ from zoneinfo import ZoneInfo
 def main():
     (repo_arg, template_arg, manifest_arg, output_arg, python_arg, model_arg,
      gpu_uuid, inference_gpu_arg, simulator_gpu_arg, simulator_gpu_explicit,
-     lora_arg, all_arg, limit_arg, *selection) = sys.argv[1:]
+     lora_arg, all_arg, limit_arg, image_max_token_num, *selection) = sys.argv[1:]
+    image_max_token_num = int(image_max_token_num)
     separator = selection.index('--')
     names, worker_ids = selection[:separator], set(selection[separator + 1:])
     repo = Path(repo_arg).resolve()
@@ -455,6 +468,7 @@ def main():
         'source_manifest': str(manifest_path),
         'source_manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
         'weights_arm': arm, 'model': str(model), 'adapter': str(lora) if lora else None,
+        'image_max_token_num': image_max_token_num,
         'inference_python': str(python), 'inference_gpu_uuid': gpu_uuid,
         'inference_gpu_index': inference_index,
         'simulator_workers': [{'id': worker['id'], 'gpu': worker.get('gpu'),
@@ -464,7 +478,8 @@ def main():
         'task_origins': [{'index': row['index'], 'task': row['task'],
                           'source_run_id': row.get('run_id')} for row in rows],
     }
-    qwen = {'python': str(python), 'model': str(model), 'device': 'cuda:0', 'gpu_uuid': gpu_uuid}
+    qwen = {'python': str(python), 'model': str(model), 'device': 'cuda:0', 'gpu_uuid': gpu_uuid,
+            'image_max_token_num': image_max_token_num}
     if lora is not None:
         qwen['adapter'] = str(lora)
 
@@ -480,6 +495,7 @@ def main():
     print(f'Prepared {len(selected)} task(s), weights={arm}: {output}')
     label = f'GPU {inference_index}' if inference_index is not None else 'explicit UUID'
     print(f'  Inference: {label} ({gpu_uuid})')
+    print(f'  Images: at most {image_max_token_num} visual tokens per image')
     for worker in provenance['simulator_workers']:
         print(f'  Simulator: {worker["id"]}, GPU {worker["gpu"]} ({worker["gpu_uuid"]})')
     for row in selected:
