@@ -1,7 +1,7 @@
 """Durable 100-task runner. One immutable attempt per row; never filter failures.
 
-Run from a clean, frozen checkout on the controller host. JSON config supplies
-site paths; authentication stays in the existing local SSH/model clients.
+Local edits are allowed; source identity and dirty state are recorded. JSON
+config supplies site paths; authentication stays in existing SSH/model clients.
 """
 import argparse
 import base64
@@ -359,8 +359,6 @@ class Batch:
                 cwd=self.source,env={**os.environ,'PYTHONPATH':str(self.source/'src')},
                 check=True,capture_output=True,text=True,timeout=30)
             self.source_info=json.loads(probe.stdout)
-        if self.scheduler_info['dirty']:raise RuntimeError('Scheduler source must be a clean frozen checkout')
-        if self.source_info['dirty']: raise RuntimeError('Batch source must be a clean frozen checkout')
         if config.get('source_commit') and self.source_info['commit']!=config['source_commit']:
             raise RuntimeError('Frozen executor commit mismatch')
         self.environment={**os.environ,'PYTHONPATH':str(self.source/'src')}

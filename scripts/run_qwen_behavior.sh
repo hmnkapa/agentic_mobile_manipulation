@@ -92,8 +92,8 @@ output=""
 # output="/home/liqi/agentic_mobile_manipulation_runs/qwen_behavior/radio-base-001"  # Explicit directory; must not already exist
 # output="/home/liqi/agentic_mobile_manipulation_runs/qwen_behavior/radio-lora-1122-001"
 
-# 10. Execute / prepare only: execution is the default; uncommitted source
-# changes are still rejected by the existing frozen-source requirement.
+# 10. Execute / prepare only: execution is the default. Local edits are allowed;
+# source commit and working-tree state are recorded with the run.
 prepare_only=false
 # prepare_only=true  # Write configs only; no model or simulator launch. CLI: --prepare-only
 
@@ -176,7 +176,7 @@ The local simulator worker ID, GPU index and UUID follow simulator_gpu automatic
 Other runner templates retain their original workers; use --worker to select them.
 The controller host loads Qwen locally. CUDA inference and simulation must use
 different physical GPUs; other templates need expected_gpu_uuid for each worker.
-Execution requires a clean frozen checkout. Preparation alone permits local edits.
+Execution and resume allow local edits; source identity and dirty state are recorded.
 Episodes remain unbounded; --limit selects tasks, never actions or model tokens.
 Execution and --resume print live task stages, model tool calls/results and
 independent evaluation, with a waiting heartbeat every 30 seconds.
@@ -188,12 +188,6 @@ require_value() {
     [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || die "$1 requires a value"
 }
 print_command() { printf ' %q' "$@"; printf '\n'; }
-require_frozen_source() {
-    local changes
-    changes="$(git -C "$repo_root" status --porcelain)" || die "Cannot inspect source version"
-    [[ -z "$changes" ]] || die "Execution requires a clean frozen checkout. Commit the intended changes first; --prepare-only writes configs without launching."
-}
-
 while (($#)); do
     case "$1" in
         -h|--help) usage; exit 0 ;;
@@ -245,7 +239,6 @@ if [[ -n "$resume" ]]; then
     if $new_options; then die "--resume only accepts --controller-python; existing run settings are retained"; fi
     [[ -f "$resume/runner.json" ]] || die "--resume must contain runner.json"
     runner_config="$(cd -- "$resume" && pwd -P)/runner.json"
-    require_frozen_source
     printf 'Resume original supervisor:\n'
     print_command "$controller_python" "$repo_root/scripts/run_behavior100.py" --config "$runner_config" --console-progress
     cd -- "$repo_root"
@@ -261,7 +254,6 @@ fi
 [[ -n "$qwen_python" && -n "$model" ]] || die "Specify --qwen-python and --model (or the QWEN_* environment variables)"
 [[ -z "$limit" || "$limit" =~ ^[1-9][0-9]*$ ]] || die "--limit must be a positive task count"
 if $all_tasks && ((${#tasks[@]})); then die "--all and --task are mutually exclusive"; fi
-if ! $prepare_only; then require_frozen_source; fi
 qwen_python="$(command -v -- "$qwen_python")" || die "Inference Python not found; use --qwen-python"
 output="$("$controller_python" -c 'import os,sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$output")"
 

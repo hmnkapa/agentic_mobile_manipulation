@@ -98,7 +98,7 @@ scripts/run_qwen_behavior.sh --prepare-only
 # 选择每张图片 64 个视觉 token；省略参数默认每张 256。
 scripts/run_qwen_behavior.sh --image-max-token-num 64 --prepare-only
 
-# 正式执行脚本配置区的当前配置；沿用原有干净冻结源码检查和资源准入。
+# 正式执行脚本配置区的当前配置；源码状态会记录，沿用原资源准入。
 scripts/run_qwen_behavior.sh
 
 # GPU 0 推理，GPU 1 仿真；反向分配时交换这两个编号即可。
@@ -179,10 +179,11 @@ scripts/run_qwen_behavior.sh \
   --resume /data/online/radio-prepared
 ```
 
-执行与恢复都要求干净、冻结的源码；`--prepare-only` 允许未提交修改，且不运行测试。
+执行与恢复均允许工作区存在未提交修改；`--prepare-only` 只准备配置，且不运行测试。
 脚本将自身 checkout 设为运行源码，所有仿真 worker 需能访问该 checkout 的相同绝对路径，
 沿用原调度器的部署约定。准备时源码若已干净，会锁定 commit；存在本地修改时先记录
-该状态，正式执行仍由监督器核对并记录实际冻结源码。
+该状态。监督器和 episode 继续记录实际源码 commit、修改状态和源码哈希；显式配置的
+`source_commit` 仍须匹配，但未提交修改本身不再阻止启动。
 `--resume` 只接受原运行目录和控制器 Python，不重新选择权重、任务或重试已失败任务。
 中断后的接管和收尾仍由原监督器按进程归属执行。
 
