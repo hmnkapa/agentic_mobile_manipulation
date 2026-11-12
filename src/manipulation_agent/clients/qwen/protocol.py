@@ -1,4 +1,4 @@
-"""Lossless native-MCP serialization; no student coordinates or prompt rewrites."""
+"""Qwen serialization and SFT-compatible model feedback at the native MCP boundary."""
 import base64
 from copy import deepcopy
 import hashlib
@@ -6,7 +6,11 @@ from pathlib import Path
 import re
 
 from ...sft.common import ConversionError, dumps, loads
+from ...sft.protocol import COORDINATE_GUIDE, rewrite_interface_text
 from ...training.rollout_metrics import _parameter_value
+
+MODEL_INTERFACE = 'sft_point_2d_integer_0_1000'
+MCP_INTERFACE = 'native_mcp_point_0_1'
 
 
 def native_tools(catalog):
@@ -30,10 +34,10 @@ def _native_parameter_value(text, schema):
 
 def protocol_error_message(error):
     """Client feedback for an unexecuted response, not a fabricated MCP receipt."""
-    instruction = ('Regenerate a complete native tool-call response using the original tool catalog. '
+    instruction = ('Regenerate a complete tool-call response using the provided model-facing catalog. '
                    'Close all tool_call, function and parameter tags. '
                    'No tools from the rejected response were executed. '
-                   'Continue from the current history and observations.')
+                   'Continue from the current history and observations. ' + COORDINATE_GUIDE)
     if error.code == 'unfinished_thinking':
         instruction = 'Close the thinking block with </think> before any <tool_call>. ' + instruction
     return {'role': 'user', 'content': dumps({
@@ -94,13 +98,16 @@ def parse_response(raw, catalog, *, thinking_prefix=False):
 
 
 def receipt_message(result, name, call_id, output):
-    """Return the exact public receipt and image bytes in their original order."""
+    """Preserve receipts/RGB; adapt only skill interface text, as in SFT."""
     content, images, expected = [], [], None
     for block in result.get('content', []):
         if block['type'] == 'text':
             content.append({'type': 'text', 'text': block['text']})
             try:
                 data = loads(block['text'])
+                if name == 'read_skill' and isinstance(data, dict) and isinstance(data.get('text'), str):
+                    data['text'] = rewrite_interface_text(data['text'])
+                    content[-1]['text'] = dumps(data)
                 frames = data.get('observation', {}).get('images') if isinstance(data, dict) else None
                 if frames is not None:
                     expected = frames

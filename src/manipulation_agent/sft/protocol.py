@@ -1,4 +1,4 @@
-"""Pure protocol transforms shared by SFT and a future Qwen inference client.
+"""Pure protocol transforms shared by SFT and the online Qwen inference client.
 
 The native tool interface remains unchanged. Do not clamp invalid points or
 invent defaults: a failed teacher call must not become a valid training target.

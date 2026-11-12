@@ -78,12 +78,14 @@ with nine tests skipped for unavailable simulator dependencies.
 
 Local Qwen3.5-4B base and PEFT LoRA weights can use the existing MCP task loop via
 `scripts/run_model_controller.py --client qwen --qwen-config FILE`. The client
-preserves the original project prompt, native `[0,1]` point schema, four-camera
-image bytes and public feedback history. It does not inherit SFT image budgets,
-coordinate transforms or history compression. For supervised single-task or batch
+uses the shared SFT `point_2d` integer `[0,1000]` protocol in model prompts, tool
+schemas and history, then converts to native MCP `point` coordinates in `[0,1]`
+before dispatch. It preserves four-camera image bytes and public feedback, with
+skill interface examples adapted to the same coordinates. It does not inherit
+SFT image budgets or history compression. For supervised single-task or batch
 runs, use [`scripts/run_qwen_behavior.sh`](scripts/run_qwen_behavior.sh) with an
 existing site runner template; add `--lora CHECKPOINT` for explicit PEFT weights.
-See [native online execution and validation limits](docs/qwen_online.md).
+See [online execution and validation limits](docs/qwen_online.md).
 
 The optional `manip-train` toolchain adds full encoding preflight, LoRA training,
 checkpoint resume and model export. See [Qwen3.5-4B SFT training](docs/sft_training.md)

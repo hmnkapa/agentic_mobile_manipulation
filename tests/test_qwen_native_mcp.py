@@ -15,8 +15,8 @@ import urllib.request
 import pytest
 
 from manipulation_agent.clients.events import parse_events
-from manipulation_agent.clients.qwen.protocol import native_tools
 from manipulation_agent.clients.qwen.worker import run
+from manipulation_agent.sft.protocol import build_student_context, rewrite_interface_text
 from manipulation_agent.tools import tool_specs
 from manipulation_agent.training.artifacts import TrainingError, fingerprint
 from manipulation_agent.vision_policy import system_prompt
@@ -63,7 +63,7 @@ class ScriptedFixture:
         self.turn=0;self.latest=None;self.first=None;self.messages=[]
 
     def generate(self,messages,tools):
-        assert tools==native_tools(tool_specs('skills'))
+        assert tools==build_student_context(system_prompt('skills'),tool_specs('skills'))[1]
         self.messages.append(deepcopy(messages))
         for message in messages:
             if message['role']=='tool':
@@ -81,22 +81,30 @@ class ScriptedFixture:
         elif i in (7,8):
             name,args='act',{'primitive':'grasp','revision':self.latest['revision'],
                 'target':{'image_ref':self.first['images'][0]['image_ref'] if i==8 else self.latest['images'][0]['image_ref'],
-                          'point':[.5,.5] if i==8 else [500,750]},
+                          'point_2d':[500,500] if i==8 else [500,750]},
                 'placement_yaw_degrees':None,'wait_seconds':None}
         elif i<60:
             name,args='act',{'primitive':'wait','revision':self.latest['revision'],'target':None,
-                             'placement_yaw_degrees':None,'wait_seconds':.1}
+                             'placement_yaw_degrees':None,'wait_seconds':21 if i==9 else .1}
         else:name,args='finish',{'outcome':'blocked','reason':'Scripted CPU transport fixture only.'}
         return {'raw_response':xml(name,args)+'<|im_end|>','input_tokens':100+i,
                 'generated_tokens':20,'finish_reason':'eos','input_ids_sha256':'fixture-only'}
 
 
-def test_worker_real_mcp_all_tools_errors_images_and_more_than_50_actions(mock_episode,tmp_path):
+def test_worker_real_mcp_all_tools_errors_images_and_more_than_50_actions(mock_episode,tmp_path,monkeypatch):
+    from mcp import ClientSession
     url,episode,process=mock_episode
     output=tmp_path/'controller';output.mkdir()
     request={'instructions':system_prompt('skills'),'prompt':'Synthetic CPU transport fixture only.',
              'tools':tool_specs('skills'),'mcp_command':sys.executable,
              'mcp_args':['-m','manipulation_agent.mcp_server','--bridge',url]}
+    original_request=deepcopy(request)
+    dispatched=[]
+    original_call=ClientSession.call_tool
+    async def capture(self,name,arguments,*args,**kwargs):
+        dispatched.append((name,deepcopy(arguments)))
+        return await original_call(self,name,arguments,*args,**kwargs)
+    monkeypatch.setattr(ClientSession,'call_tool',capture)
     backend=ScriptedFixture();stream=io.StringIO()
     with contextlib.redirect_stdout(stream):asyncio.run(run(request,output,backend))
     raw=output/'model_events.jsonl';raw.write_text(stream.getvalue())
@@ -110,19 +118,107 @@ def test_worker_real_mcp_all_tools_errors_images_and_more_than_50_actions(mock_e
     assert any('version' in error for error in errors)
     assert any(body.get('observation') for body in bodies if not body.get('ok',True))
     calls=[e for e in parsed.canonical if e['kind']=='tool_call' and e['tool']=='act']
-    assert calls[0]['arguments']['target']['point']==[500,750]
+    assert calls[0]['arguments']['target']['point']==[.5,.75]
+    assert calls[0]['arguments']==next(args for name,args in dispatched if name=='act')
+    events=[json.loads(line) for line in stream.getvalue().splitlines()]
+    action=next(e['item'] for e in events if e['type']=='item.started' and e['item']['tool']=='act')
+    assert action['model_arguments']['target']['point_2d']==[500,750]
+    assert action['arguments']==calls[0]['arguments']
     process.wait(timeout=15)
     record=json.loads((episode/'run.json').read_text())
     assert record['agent_steps']>50 and record['actions']>50
     assert record['execution_limit_policy']['episode_budget_policy']=='unbounded'
     assert record['evaluation']['protocol']=='mock_rgb_contract_only'
     latest=backend.messages[-1]
-    assert latest[0]['content']==request['instructions']
+    system,tools=build_student_context(request['instructions'],request['tools'])
+    assert latest[0]['content']==system
     assert latest[1]['content']==request['prompt']
+    assert request==original_request
+    model_calls=[call['function'] for message in latest if message['role']=='assistant'
+                 for call in message['tool_calls'] if call['function']['name']=='act']
+    assert model_calls[0]['arguments']['target']==action['model_arguments']['target']
+    skill=next(m for m in latest if m['role']=='tool' and m['name']=='read_skill')
+    native_skill=next(body for body in bodies if 'text' in body)
+    assert json.loads(skill['content'][0]['text'])['text']==rewrite_interface_text(native_skill['text'])
+    inputs=json.loads((output/'qwen_inputs.json').read_text())
+    assert inputs['instructions']==system and inputs['tools']==tools
+    assert inputs['native_inputs']=={'instructions':request['instructions'],'tools':request['tools']}
+    assert inputs['model_input_sha256']==fingerprint([system,request['prompt'],tools])
+    assert inputs['project_input_sha256']==fingerprint([request['instructions'],request['prompt'],request['tools']])
     # Every prior delivered image remains present, with original files intact.
     images=[part for message in latest if isinstance(message.get('content'),list)
             for part in message['content'] if part['type']=='image']
     assert len(images)>200 and all(Path(image['image']).is_file() for image in images)
+
+
+def test_coordinate_validation_is_atomic_and_valid_points_are_converted_once(mock_episode,tmp_path,monkeypatch):
+    from mcp import ClientSession
+    url,episode,process=mock_episode
+    output=tmp_path/'controller';output.mkdir()
+    request={'instructions':system_prompt('minimal'),'prompt':'Scripted coordinate boundary fixture.',
+             'tools':tool_specs('skills'),'mcp_command':sys.executable,
+             'mcp_args':['-m','manipulation_agent.mcp_server','--bridge',url]}
+    invalid_targets=[{'point_2d':point} for point in (
+        [-1,0],[1001,0],[0.5,750],[0.0,1000.0],[True,0],[0],[0,1,2],['500',750])]
+    invalid_targets += [{'point':[.5,.75]}, {'point':[.5,.75],'point_2d':[500,750]}, {}, []]
+    points=[[0,1000],[1000,0],[125,875]]
+    dispatched=[]
+    original=ClientSession.call_tool
+    async def capture(self,name,arguments,*args,**kwargs):
+        dispatched.append((name,deepcopy(arguments)))
+        return await original(self,name,arguments,*args,**kwargs)
+    monkeypatch.setattr(ClientSession,'call_tool',capture)
+
+    class CoordinateFixture:
+        turn=0
+        history=None
+        def generate(self,messages,tools):
+            i=self.turn;self.turn+=1
+            assert self.turn<=len(invalid_targets)+len(points)+4, 'Unexpected coordinate retry'
+            self.history=deepcopy(messages)
+            if i==0:
+                raw=xml('initialize',{})
+            else:
+                observed=[json.loads(m['content'][0]['text'])['observation'] for m in messages
+                          if m['role']=='tool'][-1]
+                args={'primitive':'grasp','revision':observed['revision'],
+                      'target':{'image_ref':observed['images'][0]['image_ref']},
+                      'placement_yaw_degrees':None,'wait_seconds':None}
+                index=i-1
+                if index<len(invalid_targets):
+                    bad=invalid_targets[index]
+                    args['target']=({**args['target'],**bad} if isinstance(bad,dict) else bad)
+                    # A valid earlier call must not execute if any point is invalid.
+                    wait={**args,'primitive':'wait','target':None,'wait_seconds':.1}
+                    raw=xml('act',wait)+'\n'+xml('act',args)
+                elif index<len(invalid_targets)+len(points):
+                    args['target']['point_2d']=points[index-len(invalid_targets)]
+                    raw=xml('act',args)
+                elif index==len(invalid_targets)+len(points):
+                    raw=xml('act',{**args,'primitive':'release','target':None})
+                elif index==len(invalid_targets)+len(points)+1:
+                    raw=xml('act',{**args,'primitive':'wait','target':None,'wait_seconds':.1})
+                else:
+                    raw=xml('finish',{'outcome':'blocked','reason':'CPU coordinate fixture only.'})
+            return {'raw_response':raw,'input_tokens':100,'generated_tokens':20,'finish_reason':'eos'}
+
+    backend=CoordinateFixture();stream=io.StringIO()
+    with contextlib.redirect_stdout(stream):asyncio.run(run(request,output,backend))
+    events=[json.loads(line) for line in stream.getvalue().splitlines()]
+    rejected=[e for e in events if e['type']=='generation.rejected']
+    assert len(rejected)==len(invalid_targets)
+    assert all(e['error']['code']=='invalid_coordinates' and e['dispatched_tool_calls']==0 for e in rejected)
+    assert all(e['error']['tool']=='act' and e['error']['parameter']=='target' for e in rejected)
+    assert all('point_2d' in e['feedback']['content'] and '1000' in e['feedback']['content'] for e in rejected)
+    assert [name for name,args in dispatched]==['initialize']+['act']*5+['finish']
+    assert [args['target']['point'] for name,args in dispatched if name=='act' and args['target']]==[
+        [0,1],[1,0],[.125,.875]]
+    assert all(args['target'] is None for name,args in dispatched if name=='act' and args['primitive'] in ('wait','release'))
+    model_targets=[c['function']['arguments']['target'] for m in backend.history if m['role']=='assistant'
+                   for c in m['tool_calls'] if c['function']['name']=='act']
+    assert [t['point_2d'] for t in model_targets if t]==points
+    assert all('point' not in t for t in model_targets if t)
+    process.wait(timeout=15)
 
 
 def test_uncertain_dispatch_is_not_retried(mock_episode,tmp_path,monkeypatch):

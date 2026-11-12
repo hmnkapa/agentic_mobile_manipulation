@@ -6,8 +6,9 @@ import sys
 
 import pytest
 
-from manipulation_agent.clients.qwen.protocol import native_tools, parse_response
+from manipulation_agent.clients.qwen.protocol import parse_response
 from manipulation_agent.sft.common import ConversionError
+from manipulation_agent.sft.protocol import build_student_context, from_student_arguments
 from manipulation_agent.tools import tool_specs
 from manipulation_agent.training.artifacts import model_manifest
 from manipulation_agent.training.rollout_backend import NativeGenerationBackend
@@ -39,10 +40,11 @@ def test_real_native_weights_zero_and_four_rgb(request,tmp_path):
     try:
         backend=NativeGenerationBackend(model,None,device)
         report['backend']=backend.describe()
-        initial=[{'role':'system','content':system_prompt('skills')},
+        system,tools=build_student_context(system_prompt('skills'),tool_specs('skills'))
+        catalog=[{'name':t['function']['name'],'inputSchema':t['function']['parameters']} for t in tools]
+        initial=[{'role':'system','content':system},
                   {'role':'user','content':'Use only the manipulation MCP tools to complete this simulation task.\n'
                    "Turn on the radio receiver that's on the table in the living room."}]
-        catalog=tool_specs('skills');tools=native_tools(catalog)
         content=[{'type':'text','text':'Synthetic component observation. revision=0'}]
         for i,view in enumerate(('front','back','left','right')):
             image=tmp_path/(view+'.png');Image.new('RGB',(512,512),(i*50,100,150)).save(image)
@@ -71,6 +73,8 @@ def test_real_native_weights_zero_and_four_rgb(request,tmp_path):
                     _,calls=parse_response(result['raw_response'],catalog,
                         thinking_prefix=result['generation_prefix_has_think'])
                     result['parsed_calls']=calls
+                    result['mcp_calls']=[{'name':call['name'],
+                        'arguments':from_student_arguments(call['name'],call['arguments'])} for call in calls]
                 except ConversionError as exc:
                     result['protocol_error']=exc.record()
                 report['samples'].append({'kind':kind,'images':count,**result})

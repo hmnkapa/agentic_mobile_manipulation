@@ -23,9 +23,11 @@ A probe establishes executable/version/required CLI flags only, not authenticati
 image delivery, model execution, or task success.
 
 `--client qwen --qwen-config FILE` adds a local Qwen3.5-4B base/PEFT client with
-the same project prompt, native MCP schemas, original four-view RGB and full
-public history. It does not apply SFT coordinates, image budgets or compression.
-See [native online execution](../../../docs/qwen_online.md). Its registration
+the shared SFT `point_2d` integer `[0,1000]` protocol in model prompts, tool schemas,
+skill examples and history. Calls are converted to native MCP `point` in `[0,1]`
+before dispatch. Original four-view RGB and full public history are retained;
+SFT image budgets and compression are not applied.
+See [online execution](../../../docs/qwen_online.md). Its registration
 probe is not a dependency/model/GPU validation; preparation checks the configured
 interpreter. The existing Codex argv and low default are unchanged.
 

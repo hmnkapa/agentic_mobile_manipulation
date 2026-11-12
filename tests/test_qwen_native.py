@@ -23,6 +23,7 @@ from manipulation_agent.clients.qwen.config import load_config
 from manipulation_agent.clients.qwen.protocol import native_tools, parse_response, receipt_message
 from manipulation_agent.observations.mock_rgb import png_fixture
 from manipulation_agent.sft.common import ConversionError
+from manipulation_agent.sft.protocol import build_student_context, rewrite_interface_text
 from manipulation_agent.tools import tool_specs
 from manipulation_agent.vision_policy import system_prompt
 
@@ -42,7 +43,7 @@ def runtime_config(tmp_path, *, adapter=False):
     return path
 
 
-def test_prompt_and_catalog_are_identical_to_codex(tmp_path):
+def test_original_prompt_and_catalog_are_archived_before_model_adaptation(tmp_path):
     original=tool_specs('skills')
     prompt=system_prompt('skills')
     requests=[]
@@ -57,6 +58,8 @@ def test_prompt_and_catalog_are_identical_to_codex(tmp_path):
         assert request['instructions']==prompt
         assert request['prompt']==config.prompt
         assert request['tools']==original
+        assert request['interface']=='sft_point_2d_integer_0_1000'
+        assert request['mcp_interface']=='native_mcp_point_0_1'
         assert 'qwen.worker' in project.argv[-3]
         assert not any('IMAGE' in name or 'PIXEL' in name for name in project.env_overlay)
     assert requests[0]['tools']==requests[1]['tools']
@@ -65,6 +68,35 @@ def test_prompt_and_catalog_are_identical_to_codex(tmp_path):
     for spec,tool in zip(original,tools):
         assert tool['function']['parameters']==spec['inputSchema']
         assert tool['function']['description']==spec['description']
+
+
+@pytest.mark.parametrize('profile', ['minimal', 'skills'])
+def test_model_context_uses_sft_coordinates_without_mutating_native_inputs(profile):
+    catalog = tool_specs(profile)
+    original = deepcopy(catalog)
+    system, tools = build_student_context(system_prompt(profile), catalog)
+    assert catalog == original
+    assert 'point_2d=[x,y]' in system and 'integers from 0 to 1000' in system
+    assert 'with normalized x' not in system and 'point: [x,y]' not in system
+    act = next(t['function'] for t in tools if t['function']['name'] == 'act')
+    target = act['parameters']['properties']['target']
+    assert target['required'] == ['image_ref', 'point_2d']
+    assert 'point' not in target['properties']
+    assert target['properties']['point_2d']['items'] == {'type': 'integer', 'minimum': 0, 'maximum': 1000}
+    assert 'right=1,' not in act['description']
+
+
+def test_skill_interface_text_matches_sft_without_changing_receipts_or_notes(tmp_path):
+    text = 'target={image_ref, point:[0.5,0.8]}; target.point uses the latest image.'
+    body = {'ok': True, 'text': text, 'sha256': 'original-skill-source'}
+    result = {'content': [{'type': 'text', 'text': json.dumps(body)}]}
+    original = deepcopy(result)
+    skill, images = receipt_message(result, 'read_skill', 'skill', tmp_path)
+    assert images == [] and result == original
+    assert json.loads(skill['content'][0]['text']) == {**body, 'text': rewrite_interface_text(text)}
+    for name in ('task_notes', 'act', 'initialize'):
+        message, _ = receipt_message(result, name, name, tmp_path)
+        assert message['content'] == original['content']
 
 
 def test_native_parser_never_converts_or_repairs_arguments():

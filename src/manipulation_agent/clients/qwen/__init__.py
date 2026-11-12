@@ -1,4 +1,4 @@
-"""A native-interface model client, with no simulator or ML imports at import time."""
+"""An SFT-coordinate model client, with no simulator or ML imports at import time."""
 import json
 import subprocess
 
@@ -6,6 +6,7 @@ from ..base import ClientAdapter, run_process
 from ..types import ClientCapability, PreparedProject
 from ...records import write_json
 from .config import load_config
+from .protocol import MCP_INTERFACE, MODEL_INTERFACE
 
 
 class QwenAdapter(ClientAdapter):
@@ -37,7 +38,8 @@ class QwenAdapter(ClientAdapter):
         request = {'runtime': runtime, 'model': config.model, 'instructions': instructions,
                    'prompt': config.prompt, 'tools': catalog, 'mcp_command': config.mcp_command,
                    'mcp_args': config.mcp_args, 'versions': versions,
-                   'interface': 'native_mcp_point_0_1', 'episode_budget_policy': 'unbounded'}
+                   'interface': MODEL_INTERFACE, 'mcp_interface': MCP_INTERFACE,
+                   'episode_budget_policy': 'unbounded'}
         path = config.output / 'qwen_request.json'
         write_json(path, request)
         env = {'HF_HUB_OFFLINE': '1', 'TRANSFORMERS_OFFLINE': '1', 'TOKENIZERS_PARALLELISM': 'false'}

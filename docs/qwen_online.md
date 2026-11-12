@@ -1,11 +1,15 @@
-# Qwen3.5-4B 原生接口在线执行
+# Qwen3.5-4B 在线执行
 
 本地 Qwen 是现有通用控制器的一个客户端。任务指令、
 `vision_policy.system_prompt`、MCP catalog、技能、task_notes、四路 RGB、
 执行器及独立任务评分沿用 Codex 路径。模型自己选择 initialize、动作和 finish。
 
-在线接口始终是原生 `act.target.point=[x,y]`、范围 `[0,1]`。
-不会调用 SFT 的学生坐标转换、训练图片预算或历史压缩。
+模型侧与 SFT 使用同一套坐标协议：`act.target.point_2d=[x,y]`，两项均为 0–1000
+的整数，x 从左到右、y 从上到下。系统提示、工具 schema 和技能文档的接口示例
+复用 SFT 转换；模型历史也保留 `point_2d`。调用 MCP 前才将坐标除以 1000，
+改为原生 `act.target.point=[x,y]`、范围 `[0,1]`；例如 `[250,750]` → `[0.25,0.75]`。
+`image_ref`、revision 和其他参数保持原值，release/wait 继续使用 `target=null`。
+不继承训练图片预算或历史压缩。
 模型的 tokenizer、原生 chat template、视觉 processor 和上下文容量属于模型属性；
 Codex CLI 内部提示和上下文管理不宣称与本地模型逐 token 相同。
 
@@ -32,7 +36,8 @@ gpu_uuid = "GPU-your-physical-device-uuid"
 LoRA 使用指定基座的 tokenizer、processor 和 generation config，
 仅通过 PEFT 增加 adapter 权重，不从 checkpoint 读取在线行为设置。
 加载不要求 optimizer、RNG、原训练机器路径或训练契约可用。
-权重、配置和可用训练 marker 归档；训练接口差异保留为记录，不改写在线接口。
+权重、配置和可用训练 marker 归档；基座与 LoRA 均使用上述 SFT 坐标协议，
+checkpoint 的训练 marker 不覆盖在线配置。
 
 ## Bash 单任务及批量入口
 
@@ -167,24 +172,26 @@ thinking 使用基座模板默认，基座与 LoRA 相同。
 生成在基座模型的 EOS 或 tokenizer 声明的回合结束 token 处停止，避免把下一角色的
 虚构文本混入工具调用；两类权重使用相同的停止规则。
 
-每条轨迹只加载一次权重，使用真实官方 MCP SDK。每次调用结果原样进入后续历史，
+每条轨迹只加载一次权重，使用真实官方 MCP SDK。调用结果进入后续历史时，
+仅 `read_skill` 回执的 `text` 字段按 SFT 规则转换接口描述；task_notes 和其他反馈保留原文。
 图片逐张验证 SHA-256 并保存原始字节、视角与 image_ref。没有额外观察或轮询动作。
-原生工具 schema 仍由 harness 校验，非法坐标不会被夹紧、缩放或替换。
+客户端严格校验 `point_2d` 的整数类型、长度和 0–1000 范围，不接受旧 `point` 字段、
+混合字段、布尔值或小数，不夹紧或猜测单位。转换后的原生参数仍由 harness 校验。
 MCP 派发后发生传输异常记录为 execution_uncertain，不自动重发动作。
 
 原生 XML 参数兼容模板的标量写法：非字符串参数同时接受 `None/True/False`
 和 JSON 的 `null/true/false`；nullable 字符串参数中的 `None/null` 表示空值。
 普通字符串及其空白原样保留，对象和数组内部仍须使用严格 JSON。
-兼容解码不修正参数类型、坐标或其他语义错误，这些继续交给 harness 校验；
+兼容解码不修正参数类型；坐标通过上述 SFT 转换后，其他语义错误继续交给 harness 校验；
 离线评估解析器仍使用原有严格规则。
 
-每次响应的全部工具调用解析通过后才派发。缺少 `</think>`、损坏的工具调用结构、
-未知工具、非法参数编码或结束时没有工具调用，均作为可恢复的格式错误：
+每次响应的全部工具调用解析和坐标转换通过后才派发。缺少 `</think>`、损坏的工具调用结构、
+未知工具、非法参数编码、非法学生坐标或结束时没有工具调用，均作为可恢复的协议错误：
 客户端在同一会话中追加来源为 `qwen_native_client_protocol` 的 user 反馈，
 说明错误码、可定位的工具/参数、当前响应未执行任何工具，并请求重新生成完整调用。
 原有有效历史和四路图片继续保留；格式重试不会自动 initialize、look 或增加 act/look 计数。
 连续格式失败没有次数上限，直到生成有效调用，或遇到上下文耗尽等运行故障。
-该恢复仅适用于派发前的格式解析，OOM、上下文耗尽和 execution_uncertain 仍按故障处理。
+该恢复仅适用于派发前的解析和坐标校验，OOM、上下文耗尽和 execution_uncertain 仍按故障处理。
 
 所有公共历史与图片都保留。没有累计动作、轮数、token 或墙钟截止。
 单次输出在 EOS 或原生剩余上下文处结束；没有继承离线 2048 输出上限或 17408 输入预算。
@@ -205,6 +212,11 @@ qwen_config，并须声明模拟器 expected_gpu_uuid。模型与模拟器使用
 附加的 `qwen_request.json`、`qwen_inputs.json`、`qwen_runtime.json`、
 `generations.jsonl` 和 `received_images.jsonl` 保存公共输入、配置、权重、原始生成、
 token 指纹和实际图片证据。原始 think 内容不冒充公开 reasoning summary。
+`qwen_inputs.json` 保存实际传给模型的提示与 OpenAI 格式工具 schema，同时保留
+`native_inputs` 和两侧输入指纹；`qwen_request.json` 保留原始控制器输入。
+接口标记为 `sft_point_2d_integer_0_1000`，MCP 接口仍为 `native_mcp_point_0_1`。
+工具事件的 `arguments` 记录实际 MCP 原生参数，`model_arguments` 记录对应模型参数；
+原始 MCP 回执保留在事件中，便于和模拟器调用记录对齐。历史运行记录不改写。
 失败生成仍完整保存在 `generations.jsonl`；`model_events.jsonl` 中的
 `generation.rejected` 是非终止诊断，记录轮次、连续失败次数、结构化错误、
 实际反馈消息及零派发标记。每次格式失败也记录 `turn.completed` 的 token 用量，

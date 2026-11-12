@@ -14,7 +14,9 @@ from ...clients.events import successful_finish_event
 from ...records import now, write_json, source_version
 from ...training.artifacts import fingerprint, model_manifest
 from ...sft.common import ConversionError, file_hash
-from .protocol import native_tools, parse_response, protocol_error_message, receipt_message
+from ...sft.protocol import build_student_context, from_student_arguments
+from .protocol import (MCP_INTERFACE, MODEL_INTERFACE, parse_response,
+                       protocol_error_message, receipt_message)
 from .resources import process_start
 
 
@@ -42,9 +44,11 @@ async def run(request, output, backend):
     from mcp.client.stdio import stdio_client
     from ...deadline import tool_wait_seconds
 
-    messages = [{'role': 'system', 'content': request['instructions']},
+    system, tools = build_student_context(request['instructions'], request['tools'])
+    model_catalog = [{'name': tool['function']['name'], 'inputSchema': tool['function']['parameters']}
+                     for tool in tools]
+    messages = [{'role': 'system', 'content': system},
                 {'role': 'user', 'content': request['prompt']}]
-    tools = native_tools(request['tools'])
     parameters = StdioServerParameters(command=request['mcp_command'], args=request['mcp_args'],
                                        env=dict(os.environ))
     emit('thread.started', thread_id=str(uuid.uuid4()))
@@ -58,8 +62,11 @@ async def run(request, output, backend):
             actual = {t['name']: (t.get('description', ''), t['inputSchema']) for t in catalog}
             if wanted != actual:
                 raise RuntimeError('Live MCP catalog differs from the original controller catalog')
-            write_json(output / 'qwen_inputs.json', {'instructions': request['instructions'],
-                       'prompt': request['prompt'], 'tools': request['tools'],
+            write_json(output / 'qwen_inputs.json', {'instructions': system,
+                       'prompt': request['prompt'], 'tools': tools,
+                       'interface': MODEL_INTERFACE, 'mcp_interface': MCP_INTERFACE,
+                       'native_inputs': {'instructions': request['instructions'], 'tools': request['tools']},
+                       'model_input_sha256': fingerprint([system, request['prompt'], tools]),
                        'project_input_sha256': fingerprint([request['instructions'], request['prompt'], request['tools']])})
             turn = 0
             consecutive_failures = 0
@@ -78,11 +85,19 @@ async def run(request, output, backend):
                 # Parse the entire response before publishing or dispatching any
                 # call. Only pre-dispatch protocol errors may be regenerated.
                 try:
-                    public, calls = parse_response(generation['raw_response'], request['tools'],
+                    public, calls = parse_response(generation['raw_response'], model_catalog,
                         thinking_prefix=generation.get('generation_prefix_has_think',False))
                     if not calls:
                         raise ConversionError('missing_tool_call',
                                               'Response ended without a tool call or formal finish')
+                    # Convert every call before dispatch, so an invalid point in
+                    # a later call cannot leave a partially executed response.
+                    native_arguments = []
+                    for call in calls:
+                        try:
+                            native_arguments.append(from_student_arguments(call['name'], call['arguments']))
+                        except ConversionError as exc:
+                            raise ConversionError(exc.code, str(exc), tool=call['name'], parameter='target') from exc
                 except ConversionError as exc:
                     consecutive_failures += 1
                     feedback = protocol_error_message(exc)
@@ -100,12 +115,13 @@ async def run(request, output, backend):
                     assistant['tool_calls'].append({'id': call['id'], 'type': 'function',
                         'function': {'name': call['name'], 'arguments': deepcopy(call['arguments'])}})
                 messages.append(assistant)
-                for call in calls:
+                for call, arguments in zip(calls, native_arguments):
                     item = {'type': 'mcp_tool_call', 'id': call['id'], 'server': 'manipulation',
-                            'tool': call['name'], 'arguments': call['arguments']}
+                            'tool': call['name'], 'arguments': arguments,
+                            'model_arguments': deepcopy(call['arguments'])}
                     emit('item.started', item=item)
                     try:
-                        receipt = await session.call_tool(call['name'], call['arguments'])
+                        receipt = await session.call_tool(call['name'], arguments)
                     except Exception as exc:
                         emit('item.completed', item={**item, 'error': {'code': 'execution_uncertain',
                              'error_type': type(exc).__name__}, 'result': None})
@@ -130,7 +146,8 @@ def main():
     state = {'status': 'starting', 'host': os.uname().nodename, 'pid': os.getpid(),
              'pid_start': process_start(os.getpid()),
              'python': sys.executable, 'gpu_uuid': runtime['gpu_uuid'], 'started_at': now(),
-             'validation_level': 'model_startup', 'training_contract_applied': False}
+             'validation_level': 'model_startup', 'training_contract_applied': False,
+             'interface': MODEL_INTERFACE, 'mcp_interface': MCP_INTERFACE}
     state.update(source=source_version(),configuration=runtime,versions=request['versions'])
     backend = None
     write_json(output / 'qwen_runtime.json', state)
@@ -147,7 +164,7 @@ def main():
             marker = root / 'manipulation_training.json'
             if marker.is_file():
                 adapter['training_marker'] = json.loads(marker.read_text())
-            adapter['training_interface_policy'] = 'record_only_never_overrides_native_online_inputs'
+            adapter['training_interface_policy'] = 'record_only_shared_sft_coordinate_protocol'
         state.update(status='loading_model', base=base, adapter=adapter)
         write_json(output / 'qwen_runtime.json', state)
         from ...training.rollout_backend import NativeGenerationBackend
